@@ -47,6 +47,9 @@
             <span>Audio URL</span>
             <input id="url-input" type="url" placeholder="https://example.com/weather-radio-stream.mp3" />
           </label>
+          <div id="url-decode-status" class="field-note">
+            Supports direct audio file URLs and YouTube links for URL decoding.
+          </div>
           <div class="row">
             <button id="decode-url-button" class="primary">Decode URL File</button>
             <button id="start-stream-button">Monitor Live Stream</button>
@@ -85,26 +88,6 @@
           </div>
           <a id="rss-link" class="inline-link" href="/alerts.xml" target="_blank" rel="noreferrer">Open Alert RSS Feed</a>
         </article>
-      </section>
-
-      <section class="panel">
-        <h2>Alert Transcripts</h2>
-        <p class="panel-copy">Turn on local AI transcripts for completed alert recordings. The first transcript run may download a speech model to the server.</p>
-        <div class="row">
-          <label class="field checkbox-field">
-            <input id="transcription-enabled" type="checkbox" />
-            <span>Enable local alert transcripts</span>
-          </label>
-          <label class="field compact-field">
-            <span>Transcript Model</span>
-            <select id="transcription-model">
-              <option value="tiny.en">tiny.en</option>
-              <option value="base.en">base.en</option>
-              <option value="small.en">small.en</option>
-              <option value="medium.en">medium.en</option>
-            </select>
-          </label>
-        </div>
       </section>
 
       <section class="panel">

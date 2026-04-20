@@ -154,13 +154,28 @@ h2 {
   gap: 10px;
 }
 
-.inline-actions {
-  justify-content: flex-end;
-}
-
 .field {
   display: grid;
   gap: 8px;
+}
+
+.field-note {
+  margin-top: -4px;
+  color: var(--muted);
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.field-note.warn {
+  color: var(--accent-strong);
+}
+
+.field-note.error {
+  color: var(--danger);
+}
+
+.field-note.success {
+  color: var(--success);
 }
 
 .compact-field {
@@ -235,12 +250,6 @@ button.primary {
 
 button.ghost {
   background: rgba(255, 255, 255, 0.03);
-}
-
-button.compact-button {
-  width: auto;
-  min-height: 38px;
-  padding: 0 14px;
 }
 
 .monitor {
@@ -358,15 +367,6 @@ button.compact-button {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--accent-strong);
-}
-
-.transcript-text {
-  padding: 12px;
-  border-radius: 14px;
-  background: rgba(4, 11, 18, 0.72);
-  color: #d8edf9;
-  line-height: 1.6;
-  white-space: pre-wrap;
 }
 
 .recording-status {

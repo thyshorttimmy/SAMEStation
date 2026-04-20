@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from queue import Empty, SimpleQueue
 from typing import Literal
 
@@ -21,6 +25,8 @@ CONSOLE_WIDTH = 900
 CONSOLE_HEIGHT = 620
 DEFAULT_SERVER_URL = f"http://127.0.0.1:{DEFAULT_PORT}"
 LOG_FORMAT = "%(asctime)s | %(levelname)s | %(message)s"
+LAUNCHER_SETTINGS_PATH = app_root() / "data" / "launcher-settings.json"
+AUTO_START_TASK_NAME = "SAMECode Auto Start"
 ModeName = Literal["server", "client", "both"]
 
 CONSOLE_HTML = """
@@ -196,6 +202,12 @@ CONSOLE_HTML = """
 class LaunchSelection:
     mode: ModeName
     server_url: str
+    port: int
+    auto_start_monitor: bool = False
+    auto_start_device_id: int | None = None
+    auto_start_pre_roll: int | None = None
+    auto_start_max_record: int | None = None
+    auto_start_with_windows: bool = False
 
 
 class BufferedLogHandler(logging.Handler):
@@ -255,6 +267,8 @@ class DesktopRuntime:
         configure_logging()
         if self.selection.mode in {"server", "both"}:
             self._start_local_server()
+            if self.selection.auto_start_monitor:
+                self._auto_start_server_monitor()
             self._create_console_window()
         if self.selection.mode == "client":
             self._create_app_window(self.selection.server_url, title=f"{WINDOW_TITLE} Client")
@@ -268,7 +282,7 @@ class DesktopRuntime:
         return f"http://127.0.0.1:{self.context.port}"
 
     def _start_local_server(self) -> None:
-        self.context = create_server_context(port=DEFAULT_PORT, enable_cli=False)
+        self.context = create_server_context(port=self.selection.port, enable_cli=False)
         self.server_thread = threading.Thread(
             target=self.context.server.serve_forever,
             name="samecode-http",
@@ -276,6 +290,38 @@ class DesktopRuntime:
         )
         self.server_thread.start()
         logging.getLogger("samecode").info("SAMECode listening on %s", self.local_server_url)
+
+    def _auto_start_server_monitor(self) -> None:
+        settings = MONITOR.get_settings()
+        device_id = self.selection.auto_start_device_id
+        if device_id is None:
+            saved_device = settings.get("deviceId")
+            device_id = int(saved_device) if saved_device is not None else None
+        if device_id is None or int(device_id) < 0:
+            raise RuntimeError("Auto-start monitor requested but no server audio device is configured.")
+
+        pre_roll_seconds = (
+            self.selection.auto_start_pre_roll
+            if self.selection.auto_start_pre_roll is not None
+            else int(settings.get("preRollSeconds") or 10)
+        )
+        max_record_seconds = (
+            self.selection.auto_start_max_record
+            if self.selection.auto_start_max_record is not None
+            else int(settings.get("maxRecordSeconds") or 180)
+        )
+
+        MONITOR.start(
+            int(device_id),
+            pre_roll_seconds=int(pre_roll_seconds),
+            max_record_seconds=int(max_record_seconds),
+        )
+        logging.getLogger("samecode").info(
+            "Auto-started monitor on device=%s preRoll=%s maxRecord=%s",
+            device_id,
+            pre_roll_seconds,
+            max_record_seconds,
+        )
 
     def _create_console_window(self) -> None:
         if self.context is None:
@@ -353,22 +399,159 @@ def normalize_server_url(raw_url: str) -> str:
     return value.rstrip("/")
 
 
-def choose_launch_selection(default_mode: ModeName, default_server_url: str) -> LaunchSelection | None:
+def ensure_launcher_settings_dir() -> None:
+    LAUNCHER_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+
+def load_launcher_settings() -> dict[str, object]:
+    if not LAUNCHER_SETTINGS_PATH.exists():
+        return {}
+    try:
+        return json.loads(LAUNCHER_SETTINGS_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+
+def save_launcher_settings(selection: LaunchSelection) -> None:
+    ensure_launcher_settings_dir()
+    payload = {
+        "mode": selection.mode,
+        "serverUrl": selection.server_url,
+        "port": selection.port,
+        "autoStartMonitor": selection.auto_start_monitor,
+        "autoStartDeviceId": selection.auto_start_device_id,
+        "autoStartPreRoll": selection.auto_start_pre_roll,
+        "autoStartMaxRecord": selection.auto_start_max_record,
+        "autoStartWithWindows": selection.auto_start_with_windows,
+    }
+    LAUNCHER_SETTINGS_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def load_saved_selection() -> LaunchSelection:
+    settings = load_launcher_settings()
+    try:
+        mode = normalize_mode(str(settings.get("mode") or "both"))
+    except ValueError:
+        mode = "both"
+    return LaunchSelection(
+        mode=mode,
+        server_url=normalize_server_url(str(settings.get("serverUrl") or DEFAULT_SERVER_URL)),
+        port=int(settings.get("port") or DEFAULT_PORT),
+        auto_start_monitor=bool(settings.get("autoStartMonitor", False)),
+        auto_start_device_id=(
+            int(settings["autoStartDeviceId"])
+            if settings.get("autoStartDeviceId") not in {None, ""}
+            else None
+        ),
+        auto_start_pre_roll=(
+            int(settings["autoStartPreRoll"])
+            if settings.get("autoStartPreRoll") not in {None, ""}
+            else None
+        ),
+        auto_start_max_record=(
+            int(settings["autoStartMaxRecord"])
+            if settings.get("autoStartMaxRecord") not in {None, ""}
+            else None
+        ),
+        auto_start_with_windows=bool(settings.get("autoStartWithWindows", False)),
+    )
+
+
+def is_windows_auto_start_enabled() -> bool:
+    command = [
+        "schtasks",
+        "/Query",
+        "/TN",
+        AUTO_START_TASK_NAME,
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    return result.returncode == 0
+
+
+def build_auto_start_command_args(selection: LaunchSelection) -> list[str]:
+    args = [f"--{selection.mode}"]
+    if selection.mode == "client":
+        args.extend(["--server-url", selection.server_url])
+    if selection.mode in {"server", "both"}:
+        args.extend(["--port", str(selection.port)])
+        if selection.auto_start_monitor:
+            args.append("--auto-start-monitor")
+        if selection.auto_start_device_id is not None:
+            args.extend(["--device-id", str(selection.auto_start_device_id)])
+        if selection.auto_start_pre_roll is not None:
+            args.extend(["--pre-roll", str(selection.auto_start_pre_roll)])
+        if selection.auto_start_max_record is not None:
+            args.extend(["--max-record", str(selection.auto_start_max_record)])
+    return args
+
+
+def build_auto_start_command_line(selection: LaunchSelection) -> str:
+    args = build_auto_start_command_args(selection)
+    if getattr(sys, "frozen", False):
+        executable = str(Path(sys.executable).resolve())
+        parts = [quote_windows_arg(executable), *[quote_windows_arg(arg) for arg in args]]
+    else:
+        script = str(Path(__file__).resolve())
+        python_executable = str(Path(sys.executable).resolve())
+        parts = [quote_windows_arg(python_executable), quote_windows_arg(script), *[quote_windows_arg(arg) for arg in args]]
+    return " ".join(parts)
+
+
+def quote_windows_arg(value: str) -> str:
+    escaped = str(value).replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def sync_windows_auto_start(selection: LaunchSelection) -> None:
+    enabled = bool(selection.auto_start_with_windows)
+    if enabled:
+        command_line = build_auto_start_command_line(selection)
+        command = [
+            "schtasks",
+            "/Create",
+            "/TN",
+            AUTO_START_TASK_NAME,
+            "/SC",
+            "ONLOGON",
+            "/RL",
+            "LIMITED",
+            "/TR",
+            command_line,
+            "/F",
+        ]
+    else:
+        command = [
+            "schtasks",
+            "/Delete",
+            "/TN",
+            AUTO_START_TASK_NAME,
+            "/F",
+        ]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    if enabled and result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Unable to create auto-start task.")
+    if not enabled and result.returncode not in {0, 1}:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Unable to remove auto-start task.")
+
+
+def choose_launch_selection(default_selection: LaunchSelection) -> LaunchSelection | None:
     import tkinter as tk
     from tkinter import ttk
 
     result: dict[str, str | bool] = {
-        "mode": default_mode,
-        "server_url": default_server_url,
+        "mode": default_selection.mode,
+        "server_url": default_selection.server_url,
+        "auto_start_monitor": default_selection.auto_start_monitor,
+        "auto_start_with_windows": default_selection.auto_start_with_windows,
         "confirmed": False,
     }
 
     root = tk.Tk()
     root.title("Launch SAMECode")
-    root.geometry("620x520")
-    root.minsize(620, 520)
+    root.geometry("640x620")
+    root.minsize(620, 600)
     root.configure(bg="#f4f1e8")
-    root.resizable(False, False)
+    root.resizable(True, True)
 
     outer = ttk.Frame(root, padding=22)
     outer.pack(fill="both", expand=True)
@@ -386,8 +569,10 @@ def choose_launch_selection(default_mode: ModeName, default_server_url: str) -> 
         wraplength=500,
     ).pack(anchor="w", pady=(8, 16))
 
-    mode_var = tk.StringVar(value=default_mode)
-    server_url_var = tk.StringVar(value=default_server_url)
+    mode_var = tk.StringVar(value=default_selection.mode)
+    server_url_var = tk.StringVar(value=default_selection.server_url)
+    auto_start_monitor_var = tk.BooleanVar(value=default_selection.auto_start_monitor)
+    auto_start_with_windows_var = tk.BooleanVar(value=default_selection.auto_start_with_windows)
     error_var = tk.StringVar(value="")
 
     options = [
@@ -411,9 +596,29 @@ def choose_launch_selection(default_mode: ModeName, default_server_url: str) -> 
     server_url_entry = ttk.Entry(field, textvariable=server_url_var)
     server_url_entry.pack(fill="x", pady=(6, 0))
 
+    extras = ttk.Frame(outer)
+    extras.pack(fill="x", pady=(16, 0))
+    ttk.Checkbutton(
+        extras,
+        text="Auto-start the server monitor after launch",
+        variable=auto_start_monitor_var,
+    ).pack(anchor="w")
+    ttk.Checkbutton(
+        extras,
+        text="Start SAMECode automatically when you sign in",
+        variable=auto_start_with_windows_var,
+    ).pack(anchor="w", pady=(8, 0))
+
     def sync_field_state(*_args) -> None:
         state = "normal" if mode_var.get() == "client" else "disabled"
         server_url_entry.configure(state=state)
+        monitor_state = "disabled" if mode_var.get() == "client" else "normal"
+        if mode_var.get() == "client":
+            auto_start_monitor_var.set(False)
+        for child in extras.winfo_children():
+            label = str(child.cget("text"))
+            if "server monitor" in label:
+                child.configure(state=monitor_state)
 
     mode_var.trace_add("write", sync_field_state)
     sync_field_state()
@@ -432,6 +637,8 @@ def choose_launch_selection(default_mode: ModeName, default_server_url: str) -> 
         try:
             result["mode"] = normalize_mode(mode_var.get())
             result["server_url"] = normalize_server_url(server_url_var.get())
+            result["auto_start_monitor"] = bool(auto_start_monitor_var.get())
+            result["auto_start_with_windows"] = bool(auto_start_with_windows_var.get())
             result["confirmed"] = True
             root.destroy()
         except ValueError as exc:
@@ -469,23 +676,98 @@ def choose_launch_selection(default_mode: ModeName, default_server_url: str) -> 
 
     if not result["confirmed"]:
         return None
-    return LaunchSelection(mode=result["mode"], server_url=result["server_url"])
+    return LaunchSelection(
+        mode=result["mode"],
+        server_url=result["server_url"],
+        port=default_selection.port,
+        auto_start_monitor=bool(result["auto_start_monitor"]),
+        auto_start_with_windows=bool(result["auto_start_with_windows"]),
+        auto_start_device_id=default_selection.auto_start_device_id,
+        auto_start_pre_roll=default_selection.auto_start_pre_roll,
+        auto_start_max_record=default_selection.auto_start_max_record,
+    )
 
 
 def build_selection(args: argparse.Namespace) -> LaunchSelection | None:
-    if args.mode:
-        return LaunchSelection(normalize_mode(args.mode), normalize_server_url(args.server_url))
-    return choose_launch_selection("both", normalize_server_url(args.server_url))
+    saved_selection = load_saved_selection()
+    saved_selection.auto_start_with_windows = is_windows_auto_start_enabled()
+    auto_start_monitor = saved_selection.auto_start_monitor
+
+    flag_mode: ModeName | None = None
+    if getattr(args, "server", False):
+        flag_mode = "server"
+    elif getattr(args, "client", False):
+        flag_mode = "client"
+    elif getattr(args, "both", False):
+        flag_mode = "both"
+
+    if flag_mode is not None and args.mode is not None:
+        explicit_mode = normalize_mode(args.mode)
+        if explicit_mode != flag_mode:
+            raise ValueError("Do not mix --mode with conflicting --server/--client/--both flags.")
+
+    mode = flag_mode or (normalize_mode(args.mode) if args.mode else None)
+
+    if mode is None:
+        selection = choose_launch_selection(saved_selection)
+        if selection is None:
+            return None
+        selection.port = int(args.port)
+        return selection
+
+    if mode == "client" and args.auto_start_monitor:
+        raise ValueError("Auto-start monitor is only available in --server or --both mode.")
+    if mode == "client" and any(
+        value is not None
+        for value in (args.device_id, args.pre_roll, args.max_record)
+    ):
+        raise ValueError("Monitor options are only available in --server or --both mode.")
+
+    if args.auto_start_monitor:
+        auto_start_monitor = True
+    elif mode == "client":
+        auto_start_monitor = False
+
+    return LaunchSelection(
+        mode=mode,
+        server_url=normalize_server_url(args.server_url),
+        port=int(args.port),
+        auto_start_monitor=auto_start_monitor,
+        auto_start_device_id=args.device_id if args.device_id is not None else saved_selection.auto_start_device_id,
+        auto_start_pre_roll=args.pre_roll if args.pre_roll is not None else saved_selection.auto_start_pre_roll,
+        auto_start_max_record=args.max_record if args.max_record is not None else saved_selection.auto_start_max_record,
+        auto_start_with_windows=saved_selection.auto_start_with_windows,
+    )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Launch the SAMECode desktop app.")
-    parser.add_argument("--mode", choices=("server", "client", "both"), help="Launch mode. If omitted, show the mode chooser.")
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument("--server", action="store_true", help="Launch the local SAMECode server and server console only.")
+    mode_group.add_argument("--client", action="store_true", help="Launch the SAMECode client window against an existing server URL.")
+    mode_group.add_argument("--both", action="store_true", help="Launch the local server, server console, and client window together.")
+    parser.add_argument("--mode", choices=("server", "client", "both"), help="Legacy launch mode option. If omitted and no launch flag is provided, show the mode chooser.")
     parser.add_argument("--server-url", default=DEFAULT_SERVER_URL, help="Server URL for client mode.")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Local port to bind in server or both mode.")
+    parser.add_argument("--auto-start-monitor", action="store_true", help="Automatically start the server audio monitor in server or both mode.")
+    parser.add_argument("--device-id", type=int, help="Audio input device ID to use when auto-starting the monitor. Defaults to the saved device.")
+    parser.add_argument("--pre-roll", type=int, help="Pre-roll seconds for auto-start monitor. Defaults to the saved value.")
+    parser.add_argument("--max-record", type=int, help="Maximum record seconds for auto-start monitor. Defaults to the saved value.")
     args = parser.parse_args()
 
-    selection = build_selection(args)
+    try:
+        selection = build_selection(args)
+    except ValueError as exc:
+        parser.error(str(exc))
+        return
     if selection is None:
+        return
+
+    try:
+        save_launcher_settings(selection)
+        sync_windows_auto_start(selection)
+    except RuntimeError as exc:
+        parser.error(str(exc))
         return
 
     runtime = DesktopRuntime(selection)

@@ -8,11 +8,12 @@ self.onmessage = (event) => {
   try {
     switch (type) {
       case "decode-offline": {
-        const { samples, sampleRate, sourceLabel } = event.data;
+        const { samples, sampleRate, sourceLabel, sourceKind } = event.data;
         const result = decodeSamePcm(samples, sampleRate, { minRepeats: 1 });
         self.postMessage({
           type: "offline-results",
           sourceLabel,
+          sourceKind,
           alerts: result.alerts,
           bursts: result.bursts,
         });

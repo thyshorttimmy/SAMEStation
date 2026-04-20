@@ -31,6 +31,7 @@ const elements = {
   fileInput: document.querySelector("#file-input"),
   decodeFileButton: document.querySelector("#decode-file-button"),
   urlInput: document.querySelector("#url-input"),
+  urlDecodeStatus: document.querySelector("#url-decode-status"),
   decodeUrlButton: document.querySelector("#decode-url-button"),
   startStreamButton: document.querySelector("#start-stream-button"),
   stopStreamButton: document.querySelector("#stop-stream-button"),
@@ -47,8 +48,6 @@ const elements = {
   startLiveMonitorButton: document.querySelector("#start-live-monitor-button"),
   stopLiveMonitorButton: document.querySelector("#stop-live-monitor-button"),
   autoLivePlaybackOnAlert: document.querySelector("#auto-live-playback-on-alert"),
-  transcriptionEnabled: document.querySelector("#transcription-enabled"),
-  transcriptionModel: document.querySelector("#transcription-model"),
   ntfyEnabled: document.querySelector("#ntfy-enabled"),
   ntfyBaseUrl: document.querySelector("#ntfy-base-url"),
   ntfyTopic: document.querySelector("#ntfy-topic"),
@@ -83,13 +82,10 @@ async function boot() {
   elements.startLiveMonitorButton.addEventListener("click", handleStartServerLiveAudio);
   elements.stopLiveMonitorButton.addEventListener("click", handleStopServerLiveAudio);
   elements.clearResultsButton.addEventListener("click", handleClearAlerts);
-  elements.alertsList.addEventListener("click", handleAlertsListClick);
   elements.deviceSelect.addEventListener("change", persistServerSettings);
   elements.preRollSeconds.addEventListener("change", persistServerSettings);
   elements.maxRecordSeconds.addEventListener("change", persistServerSettings);
   elements.autoLivePlaybackOnAlert.addEventListener("change", persistServerSettings);
-  elements.transcriptionEnabled.addEventListener("change", persistServerSettings);
-  elements.transcriptionModel.addEventListener("change", persistServerSettings);
   elements.ntfyEnabled.addEventListener("change", persistServerSettings);
   elements.ntfyBaseUrl.addEventListener("change", persistServerSettings);
   elements.ntfyTopic.addEventListener("change", persistServerSettings);
@@ -114,12 +110,14 @@ function handleWorkerMessage(event) {
   const { type } = event.data;
 
   if (type === "offline-results") {
-    state.localAlerts = event.data.alerts.map((alert) => ({
+    const offlineAlerts = event.data.alerts.map((alert) => ({
       ...augmentAlertLocations(alert),
-      sourceKind: "browser-offline",
+      sourceKind: event.data.sourceKind || "browser-offline",
       sourceLabel: event.data.sourceLabel,
+      detectionMethodLabel: detectionMethodLabelForKind(event.data.sourceKind || "browser-offline"),
       detectedAt: new Date().toISOString(),
     }));
+    state.localAlerts = offlineAlerts;
     addActivity(
       "Offline decode finished",
       `${event.data.alerts.length} header${event.data.alerts.length === 1 ? "" : "s"} decoded from ${event.data.sourceLabel}.`,
@@ -127,6 +125,11 @@ function handleWorkerMessage(event) {
     );
     setDecoderState(event.data.alerts.length ? "Decoded" : "No header found");
     render();
+    if (offlineAlerts.length) {
+      postBrowserDecodedAlerts(offlineAlerts).catch((error) => {
+        failWithError("Unable to post offline decoded alerts to the server.", error);
+      });
+    }
     return;
   }
 
@@ -168,7 +171,7 @@ async function handleDecodeFile() {
 
   try {
     const arrayBuffer = await file.arrayBuffer();
-    await decodeArrayBuffer(arrayBuffer, file.name);
+    await decodeArrayBuffer(arrayBuffer, file.name, "browser-offline-file");
   } catch (error) {
     failWithError("Unable to decode the selected file.", error);
   }
@@ -177,6 +180,7 @@ async function handleDecodeFile() {
 async function handleDecodeUrlFile() {
   const rawUrl = elements.urlInput.value.trim();
   if (!rawUrl) {
+    setUrlDecodeStatus("Enter a direct audio URL or a YouTube link first.", "warn");
     addActivity("Missing URL", "Enter an audio file URL first.", "warn");
     render();
     return;
@@ -184,6 +188,7 @@ async function handleDecodeUrlFile() {
 
   setDecoderState("Fetching URL");
   elements.sourceState.textContent = "Remote file";
+  setUrlDecodeStatus("Fetching remote audio for URL decode...", "warn");
 
   try {
     const response = await fetch(proxyUrl(rawUrl));
@@ -191,8 +196,10 @@ async function handleDecodeUrlFile() {
       throw new Error(`Remote fetch failed with ${response.status}.`);
     }
     const arrayBuffer = await response.arrayBuffer();
-    await decodeArrayBuffer(arrayBuffer, rawUrl);
+    await decodeArrayBuffer(arrayBuffer, rawUrl, "browser-url-file");
+    setUrlDecodeStatus("URL decode finished. Decoded alerts will appear below if a SAME header was found.", "success");
   } catch (error) {
+    setUrlDecodeStatus(`URL decode failed: ${error instanceof Error ? error.message : String(error)}`, "error");
     failWithError("Unable to fetch or decode the remote file URL.", error);
   }
 }
@@ -200,12 +207,14 @@ async function handleDecodeUrlFile() {
 async function handleStartStream() {
   const rawUrl = elements.urlInput.value.trim();
   if (!rawUrl) {
+    setUrlDecodeStatus("Enter a stream URL first. URL decoding also supports YouTube links.", "warn");
     addActivity("Missing URL", "Enter a live stream URL first.", "warn");
     render();
     return;
   }
 
   try {
+    setUrlDecodeStatus("Starting live stream monitor...", "warn");
     state.serverLiveAudioEnabled = false;
     disconnectServerDeviceMonitorAudio();
     await stopBrowserStreamCapture();
@@ -228,8 +237,10 @@ async function handleStartStream() {
     elements.monitorCopy.textContent = rawUrl;
     setDecoderState("Monitoring");
     addActivity("Live stream started", `Monitoring ${rawUrl}`, "info");
+    setUrlDecodeStatus("Live stream monitor started. URL decoding also supports YouTube links.", "success");
     render();
   } catch (error) {
+    setUrlDecodeStatus(`Live stream start failed: ${error instanceof Error ? error.message : String(error)}`, "error");
     failWithError("Unable to start live stream monitoring.", error);
   }
 }
@@ -359,40 +370,6 @@ async function handleStopServerMonitor() {
   }
 }
 
-async function handleAlertsListClick(event) {
-  const retranscribeButton = event.target.closest("[data-retranscribe-record-id]");
-  if (!retranscribeButton) {
-    return;
-  }
-  const recordId = retranscribeButton.getAttribute("data-retranscribe-record-id");
-  if (!recordId) {
-    return;
-  }
-
-  try {
-    retranscribeButton.disabled = true;
-    const response = await fetch("/api/alerts/retranscribe", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ recordId }),
-    });
-    if (!response.ok) {
-      const payload = await response.json().catch(() => ({}));
-      throw new Error(payload.error || `Retranscribe failed with ${response.status}.`);
-    }
-    const payload = await response.json();
-    if (payload.monitor) {
-      applyServerStatus(payload.monitor);
-    }
-    addActivity("Transcript requeued", `Alert ${recordId.slice(0, 8)} was sent back through the transcription worker.`, "info");
-    render();
-  } catch (error) {
-    failWithError("Unable to retranscribe alert.", error);
-  } finally {
-    retranscribeButton.disabled = false;
-  }
-}
-
 function connectServerEvents() {
   if (state.eventsSource) {
     state.eventsSource.close();
@@ -495,8 +472,6 @@ async function persistServerSettings(silent = true) {
         preRollSeconds: Number(elements.preRollSeconds.value || 10),
         maxRecordSeconds: Number(elements.maxRecordSeconds.value || 180),
         autoLivePlaybackOnAlert: elements.autoLivePlaybackOnAlert.checked,
-        transcriptionEnabled: elements.transcriptionEnabled.checked,
-        transcriptionModel: elements.transcriptionModel.value,
         ntfyEnabled: elements.ntfyEnabled.checked,
         ntfyBaseUrl: elements.ntfyBaseUrl.value.trim(),
         ntfyTopic: elements.ntfyTopic.value.trim(),
@@ -621,7 +596,7 @@ async function stopBrowserStreamCapture() {
   render();
 }
 
-async function decodeArrayBuffer(arrayBuffer, sourceLabel) {
+async function decodeArrayBuffer(arrayBuffer, sourceLabel, sourceKind = "browser-offline") {
   await ensureAudioPipeline();
   const workingCopy = arrayBuffer.slice(0);
   const audioBuffer = await state.audioContext.decodeAudioData(workingCopy);
@@ -631,11 +606,35 @@ async function decodeArrayBuffer(arrayBuffer, sourceLabel) {
     {
       type: "decode-offline",
       sourceLabel,
+      sourceKind,
       samples: monoSamples,
       sampleRate: audioBuffer.sampleRate,
     },
     [monoSamples.buffer],
   );
+}
+
+async function postBrowserDecodedAlerts(alerts) {
+  const response = await fetch("/api/alerts/import", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ alerts }),
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || `Alert import failed with ${response.status}.`);
+  }
+  const payload = await response.json();
+  state.localAlerts = [];
+  if (payload.monitor) {
+    applyServerStatus(payload.monitor);
+  }
+  addActivity(
+    "Offline alerts posted",
+    `${alerts.length} decoded alert${alerts.length === 1 ? "" : "s"} were posted into the server alert history.`,
+    "info",
+  );
+  render();
 }
 
 function mixToMono(audioBuffer) {
@@ -691,12 +690,6 @@ function applyServerSettings(settings) {
   if (settings.autoLivePlaybackOnAlert != null) {
     state.autoLivePlaybackOnAlert = Boolean(settings.autoLivePlaybackOnAlert);
     elements.autoLivePlaybackOnAlert.checked = state.autoLivePlaybackOnAlert;
-  }
-  if (settings.transcriptionEnabled != null) {
-    elements.transcriptionEnabled.checked = Boolean(settings.transcriptionEnabled);
-  }
-  if (settings.transcriptionModel != null) {
-    elements.transcriptionModel.value = String(settings.transcriptionModel);
   }
   if (settings.ntfyEnabled != null) {
     elements.ntfyEnabled.checked = Boolean(settings.ntfyEnabled);
@@ -774,6 +767,14 @@ function failWithError(prefix, error) {
   render();
 }
 
+function setUrlDecodeStatus(message, tone = "") {
+  if (!elements.urlDecodeStatus) {
+    return;
+  }
+  elements.urlDecodeStatus.textContent = message;
+  elements.urlDecodeStatus.className = `field-note${tone ? ` ${tone}` : ""}`;
+}
+
 function render() {
   const alerts = [...state.serverAlerts, ...state.localAlerts];
   elements.alertCount.textContent = String(alerts.length);
@@ -792,9 +793,7 @@ function renderAlerts(alerts) {
       recordingStatus: alert.recording?.status || null,
       recordingUrl: alert.recording?.url || null,
       endReason: alert.recording?.endReason || null,
-      transcriptStatus: alert.transcript?.status || null,
-      transcriptText: alert.transcript?.text || null,
-      transcriptError: alert.transcript?.error || null,
+      detectionMethodLabel: alert.detectionMethodLabel || null,
       sourceLabel: alert.sourceLabel || null,
       completedAt: alert.completedAt || null,
     })),
@@ -827,6 +826,7 @@ function renderAlerts(alerts) {
       const confidencePercent = `${Math.round((alert.confidence || 0) * 100)}%`;
       const issueDisplay = alert.issued?.display || formatTimestamp(alert.detectedAt) || alert.issueCode || "Unknown";
       const sourceLabel = alert.sourceLabel || "Local decode";
+      const detectionMethodLabel = alert.detectionMethodLabel || detectionMethodLabelForKind(alert.sourceKind);
       const rawBurstText = formatRawBursts(alert);
       const recordingMarkup = alert.recording?.url
         ? `
@@ -844,14 +844,6 @@ function renderAlerts(alerts) {
               </div>
             `
         : "";
-      const transcriptMarkup = formatTranscriptMarkup(alert.transcript);
-      const retranscribeMarkup = alert.recordId && alert.recording?.url
-        ? `
-            <div class="row inline-actions">
-              <button type="button" class="ghost compact-button" data-retranscribe-record-id="${escapeHtml(alert.recordId)}">Retranscribe</button>
-            </div>
-          `
-        : "";
       const statusPillClass = alert.recording?.status === "recording" ? "warn" : alert.repeatCount >= 3 ? "" : "warn";
       const statusLabel = alert.recording?.status === "recording" ? "live capture" : `${alert.repeatCount || 1} repeat${alert.repeatCount === 1 ? "" : "s"}`;
       return `
@@ -866,12 +858,11 @@ function renderAlerts(alerts) {
           <div class="alert-grid">
             <div><span>Issued</span>${escapeHtml(issueDisplay)}</div>
             <div><span>Valid For</span>${escapeHtml(alert.durationText || "Unknown")}</div>
+            <div><span>Detected Via</span>${escapeHtml(detectionMethodLabel)}</div>
             <div><span>Source</span>${escapeHtml(sourceLabel)}</div>
             <div><span>Locations</span>${locationSummary}</div>
           </div>
           ${recordingMarkup}
-          ${transcriptMarkup}
-          ${retranscribeMarkup}
           <div class="raw-header">${escapeHtml(rawBurstText)}</div>
         </article>
       `;
@@ -929,39 +920,16 @@ function augmentAlertLocations(alert) {
   };
 }
 
-function formatTranscriptMarkup(transcript) {
-  if (!transcript) {
-    return "";
-  }
-
-  const status = String(transcript.status || "");
-  const model = escapeHtml(transcript.model || "tiny.en");
-  const language = escapeHtml(transcript.language || "en");
-  const text = escapeHtml(transcript.text || "");
-  const error = escapeHtml(transcript.error || "");
-
-  let body = "";
-  if (status === "disabled") {
-    body = `<div class="recording-status">Transcript capture is disabled for this server.</div>`;
-  } else if (status === "waiting") {
-    body = `<div class="recording-status">Transcript will start after the recording is finalized.</div>`;
-  } else if (status === "pending") {
-    body = `<div class="recording-status">Transcribing recording with ${model}. This alert will update when the transcript is ready.</div>`;
-  } else if (status === "error") {
-    body = `<div class="recording-status">Transcript failed: ${error || "Unknown error"}</div>`;
-  } else {
-    body = `
-      <div class="transcript-text">${text || "No spoken transcript could be recognized."}</div>
-      <div class="muted">Language ${language} | Model ${model}</div>
-    `;
-  }
-
-  return `
-    <div class="recording-block">
-      <span>Transcript</span>
-      ${body}
-    </div>
-  `;
+function detectionMethodLabelForKind(sourceKind) {
+  const normalized = String(sourceKind || "").trim().toLowerCase();
+  const labels = {
+    "server-device": "Server audio device",
+    "browser-offline-file": "Uploaded audio file",
+    "browser-url-file": "Remote URL file",
+    "browser-stream": "Browser live stream",
+    "browser-offline": "Browser offline decode",
+  };
+  return labels[normalized] || "Decoded alert";
 }
 
 async function connectServerDeviceMonitorAudio() {

@@ -24,13 +24,6 @@ EOM_TIMEOUT_SECONDS = 5.0
 NTFY_DEFAULT_BASE_URL = "https://ntfy.sh"
 NTFY_DEFAULT_PRIORITY = "high"
 NTFY_DEFAULT_TAGS = "warning,radio"
-TRANSCRIPTION_DEFAULT_MODEL = "small.en"
-TRANSCRIPTION_ALLOWED_MODELS = ("tiny.en", "base.en", "small.en", "medium.en")
-TRANSCRIPTION_INITIAL_PROMPT = (
-    "National Weather Service NOAA Weather Radio severe thunderstorm warning tornado warning "
-    "tornado watch severe thunderstorm watch advisory statement radar indicated rotation "
-    "quarter size hail Central Daylight Time county Texas take cover now moving east miles per hour"
-)
 
 
 class ServerAudioMonitor:
@@ -66,8 +59,6 @@ class ServerAudioMonitor:
         self.ntfy_completed_direct_recording_link = True
         self.ntfy_notify_on_detected = True
         self.ntfy_notify_on_completed = False
-        self.transcription_enabled = True
-        self.transcription_model = TRANSCRIPTION_DEFAULT_MODEL
         self.decoder = SAMEStreamDecoder({"maxWindowSeconds": 30, "minRepeats": 1})
         self.pre_roll_chunks: deque[np.ndarray] = deque()
         self.pre_roll_samples = 0
@@ -77,10 +68,7 @@ class ServerAudioMonitor:
         self.live_listeners: dict[str, queue.Queue[bytes | None]] = {}
         self.event_listeners: dict[str, queue.Queue[dict[str, Any] | None]] = {}
         self.notification_queue: queue.Queue[dict[str, Any] | None] = queue.Queue()
-        self.transcription_queue: queue.Queue[dict[str, Any] | None] = queue.Queue()
         self.activity_callback: Any | None = None
-        self._transcriber: Any | None = None
-        self._transcriber_model_name: str | None = None
         self._load_settings()
         self.notification_thread = threading.Thread(
             target=self._run_notification_worker,
@@ -88,12 +76,6 @@ class ServerAudioMonitor:
             daemon=True,
         )
         self.notification_thread.start()
-        self.transcription_thread = threading.Thread(
-            target=self._run_transcription_worker,
-            name="samecode-transcript",
-            daemon=True,
-        )
-        self.transcription_thread.start()
 
     def set_activity_callback(self, callback: Any | None) -> None:
         with self.lock:
@@ -201,8 +183,6 @@ class ServerAudioMonitor:
                 "ntfyCompletedDirectRecordingLink": self.ntfy_completed_direct_recording_link,
                 "ntfyNotifyOnDetected": self.ntfy_notify_on_detected,
                 "ntfyNotifyOnCompleted": self.ntfy_notify_on_completed,
-                "transcriptionEnabled": self.transcription_enabled,
-                "transcriptionModel": self.transcription_model,
             }
 
     def update_settings(
@@ -226,8 +206,6 @@ class ServerAudioMonitor:
         ntfy_completed_direct_recording_link: bool | None = None,
         ntfy_notify_on_detected: bool | None = None,
         ntfy_notify_on_completed: bool | None = None,
-        transcription_enabled: bool | None = None,
-        transcription_model: str | None = None,
     ) -> dict[str, Any]:
         with self.lock:
             if device_id is not None:
@@ -267,12 +245,6 @@ class ServerAudioMonitor:
                 self.ntfy_notify_on_detected = bool(ntfy_notify_on_detected)
             if ntfy_notify_on_completed is not None:
                 self.ntfy_notify_on_completed = bool(ntfy_notify_on_completed)
-            if transcription_enabled is not None:
-                self.transcription_enabled = bool(transcription_enabled)
-            if transcription_model is not None:
-                self.transcription_model = sanitize_transcription_model(transcription_model)
-                self._transcriber = None
-                self._transcriber_model_name = None
             self._persist_settings()
             self._emit_event("settings-updated")
             return self.get_settings()
@@ -291,34 +263,38 @@ class ServerAudioMonitor:
             self._persist_alerts()
             self._add_activity("Alerts cleared", "Stored alerts and saved recordings were removed.")
 
-    def request_retranscription(self, record_id: str) -> dict[str, Any]:
+    def import_external_alerts(self, alerts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        imported: list[dict[str, Any]] = []
         with self.lock:
-            target_alert = next((alert for alert in self.alerts if alert.get("recordId") == record_id), None)
-            if target_alert is None:
-                raise KeyError(f"Alert {record_id} was not found.")
+            for raw_alert in alerts:
+                imported_alert = {
+                    **raw_alert,
+                    "recordId": str(raw_alert.get("recordId") or uuid.uuid4().hex),
+                    "confidence": float(raw_alert.get("confidence", 0.0)),
+                    "repeatCount": int(raw_alert.get("repeatCount", 1)),
+                    "sourceKind": str(raw_alert.get("sourceKind") or "browser-offline"),
+                    "sourceLabel": str(raw_alert.get("sourceLabel") or "Browser decode"),
+                    "detectionMethodLabel": str(
+                        raw_alert.get("detectionMethodLabel")
+                        or detection_method_label_for_kind(str(raw_alert.get("sourceKind") or "browser-offline"))
+                    ),
+                    "detectedAt": str(raw_alert.get("detectedAt") or now_iso()),
+                    "completedAt": str(raw_alert.get("completedAt") or raw_alert.get("detectedAt") or now_iso()),
+                    "rawBursts": list(raw_alert.get("rawBursts") or []),
+                }
+                self.alerts.insert(0, imported_alert)
+                imported.append(imported_alert)
 
-            recording = target_alert.get("recording") or {}
-            if recording.get("status") != "complete":
-                raise RuntimeError("Only completed alert recordings can be retranscribed.")
-
-            file_name = str(recording.get("fileName") or "").strip()
-            if not file_name:
-                recording_url = str(recording.get("url") or "").strip()
-                file_name = Path(recording_url).name if recording_url else ""
-            if not file_name:
-                raise RuntimeError("This alert does not have a saved recording file.")
-
-            file_path = (self.recordings_dir / file_name).resolve()
-            if self.recordings_dir.resolve() not in file_path.parents or not file_path.exists():
-                raise FileNotFoundError(f"Saved recording not found for alert {record_id}.")
-
-            target_alert["transcript"] = build_transcript_state("pending", model=self.transcription_model)
+            self.alerts = self.alerts[:200]
             self._persist_alerts()
-            self._emit_event("transcript-requeued")
+            self._emit_event("external-alerts-imported")
 
-        self._queue_transcription(target_alert, file_path)
-        self._add_activity("Transcript requeued", file_name)
-        return json.loads(json.dumps(target_alert))
+        if imported:
+            self._add_activity(
+                "Browser alerts imported",
+                f"{len(imported)} alert{'s' if len(imported) != 1 else ''} added from browser decode.",
+            )
+        return imported
 
     def open_live_listener(self) -> tuple[str, queue.Queue[bytes | None]]:
         with self.lock:
@@ -356,6 +332,9 @@ class ServerAudioMonitor:
             issue_display = escape(alert.get("issued", {}).get("display") or alert.get("detectedAt") or "Unknown")
             duration_text = escape(alert.get("durationText") or "Unknown")
             source_label = escape(alert.get("sourceLabel") or "Server audio device")
+            detection_method = escape(
+                alert.get("detectionMethodLabel") or detection_method_label_for_kind(str(alert.get("sourceKind") or "server-device"))
+            )
             raw_header = escape(format_raw_bursts(alert))
             originator_label = escape(alert.get("originatorLabel") or "Unknown originator")
             sender = escape(alert.get("sender") or source_label)
@@ -388,7 +367,6 @@ class ServerAudioMonitor:
                 if recording_state == "complete" and escaped_recording_url
                 else "<div class=\"recording-block\"><span>Recording</span><div class=\"recording-status\">Capture in progress. This alert will update when the file is finalized.</div></div>"
             )
-            transcript_markup = build_transcript_markup(alert.get("transcript"))
 
             description = (
                 "<![CDATA["
@@ -403,11 +381,11 @@ class ServerAudioMonitor:
                 f"<div class=\"alert-grid\">"
                 f"<div><span>Issued</span>{issue_display}</div>"
                 f"<div><span>Valid For</span>{duration_text}</div>"
+                f"<div><span>Detected Via</span>{detection_method}</div>"
                 f"<div><span>Source</span>{source_label}</div>"
                 f"<div><span>Locations</span>{location_summary}</div>"
                 f"</div>"
                 f"{recording_markup}"
-                f"{transcript_markup}"
                 f"<div class=\"raw-header\">{raw_header}</div>"
                 f"</article>"
                 "]]>"
@@ -570,6 +548,7 @@ class ServerAudioMonitor:
             "repeatCount": 1,
             "sourceKind": "server-device",
             "sourceLabel": self.device_name,
+            "detectionMethodLabel": detection_method_label_for_kind("server-device"),
             "detectedAt": self.current_recording["startedAt"],
             "detectedPubDate": self.current_recording.get("detectedPubDate"),
             "completedAt": None,
@@ -585,7 +564,6 @@ class ServerAudioMonitor:
                 "sizeBytes": 0,
                 "status": "recording",
             },
-            "transcript": build_transcript_state("waiting", model=self.transcription_model),
         }
         self.alerts.insert(0, pending_alert)
         self.alerts = self.alerts[:200]
@@ -618,6 +596,7 @@ class ServerAudioMonitor:
             "repeatCount": int(recording.get("repeatCount", 1)),
             "sourceKind": "server-device",
             "sourceLabel": self.device_name,
+            "detectionMethodLabel": detection_method_label_for_kind("server-device"),
             "detectedAt": recording["startedAt"],
             "detectedPubDate": recording.get("detectedPubDate"),
             "completedAt": now_iso(),
@@ -633,16 +612,10 @@ class ServerAudioMonitor:
                 "sizeBytes": file_size,
                 "status": "complete",
             },
-            "transcript": build_transcript_state(
-                "pending" if self.transcription_enabled else "disabled",
-                model=self.transcription_model,
-            ),
         }
         self._replace_alert(alert_record)
         self._persist_alerts()
         self._add_activity("Recording saved", f"{file_name} ({alert_record['recording']['durationText']})")
-        if self.transcription_enabled:
-            self._queue_transcription(alert_record, file_path)
         self._queue_ntfy_notification(alert_record, "completed")
 
     def _current_recording_status(self) -> dict[str, Any] | None:
@@ -702,10 +675,6 @@ class ServerAudioMonitor:
         )
         self.ntfy_notify_on_detected = bool(settings.get("ntfyNotifyOnDetected", self.ntfy_notify_on_detected))
         self.ntfy_notify_on_completed = bool(settings.get("ntfyNotifyOnCompleted", self.ntfy_notify_on_completed))
-        self.transcription_enabled = bool(settings.get("transcriptionEnabled", self.transcription_enabled))
-        self.transcription_model = sanitize_transcription_model(
-            str(settings.get("transcriptionModel", self.transcription_model))
-        )
         self._persist_settings()
 
     def _persist_alerts(self) -> None:
@@ -732,8 +701,6 @@ class ServerAudioMonitor:
             "ntfyCompletedDirectRecordingLink": self.ntfy_completed_direct_recording_link,
             "ntfyNotifyOnDetected": self.ntfy_notify_on_detected,
             "ntfyNotifyOnCompleted": self.ntfy_notify_on_completed,
-            "transcriptionEnabled": self.transcription_enabled,
-            "transcriptionModel": self.transcription_model,
         }
         self.settings_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -900,16 +867,6 @@ class ServerAudioMonitor:
             }
         )
 
-    def _queue_transcription(self, alert: dict[str, Any], file_path: Path) -> None:
-        self.transcription_queue.put(
-            {
-                "recordId": str(alert.get("recordId") or ""),
-                "recordingPath": str(file_path),
-                "model": self.transcription_model,
-            }
-        )
-        self._add_activity("Transcript queued", file_path.name)
-
     def _run_notification_worker(self) -> None:
         while True:
             task = self.notification_queue.get()
@@ -920,93 +877,6 @@ class ServerAudioMonitor:
                     self._send_ntfy_notification(task["alert"], str(task.get("stage") or "detected"))
             except Exception as exc:  # noqa: BLE001
                 self._add_activity("Notification failed", str(exc))
-
-    def _run_transcription_worker(self) -> None:
-        while True:
-            task = self.transcription_queue.get()
-            if task is None:
-                return
-            record_id = str(task.get("recordId") or "")
-            recording_path = Path(str(task.get("recordingPath") or ""))
-            model_name = sanitize_transcription_model(str(task.get("model") or self.transcription_model))
-            try:
-                if not recording_path.exists():
-                    raise FileNotFoundError(f"Recording not found: {recording_path.name}")
-                self._add_activity("Transcript started", f"{recording_path.name} using {model_name}")
-                transcript = self._transcribe_recording(recording_path, model_name)
-                self._update_alert_transcript(
-                    record_id,
-                    build_transcript_state(
-                        "complete",
-                        model=model_name,
-                        text=transcript["text"],
-                        language=transcript.get("language"),
-                    ),
-                )
-                self._add_activity("Transcript finished", recording_path.name)
-            except Exception as exc:  # noqa: BLE001
-                self._update_alert_transcript(
-                    record_id,
-                    build_transcript_state("error", model=model_name, error=str(exc)),
-                )
-                self._add_activity("Transcript failed", str(exc))
-
-    def _transcribe_recording(self, file_path: Path, model_name: str) -> dict[str, Any]:
-        transcriber = self._get_transcriber(model_name)
-        segments, info = transcriber.transcribe(
-            str(file_path),
-            language="en",
-            beam_size=5,
-            best_of=5,
-            temperature=0.0,
-            vad_filter=True,
-            condition_on_previous_text=True,
-            initial_prompt=TRANSCRIPTION_INITIAL_PROMPT,
-        )
-        text_parts: list[str] = []
-        for segment in segments:
-            piece = str(getattr(segment, "text", "") or "").strip()
-            if piece:
-                text_parts.append(piece)
-        transcript_text = " ".join(text_parts).strip()
-        if not transcript_text:
-            transcript_text = "No spoken transcript could be recognized."
-        return {
-            "text": transcript_text,
-            "language": str(getattr(info, "language", "en") or "en"),
-        }
-
-    def _get_transcriber(self, model_name: str) -> Any:
-        if self._transcriber is not None and self._transcriber_model_name == model_name:
-            return self._transcriber
-        try:
-            from faster_whisper import WhisperModel
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(
-                "Alert transcription requires faster-whisper. Install the dependency bundle again to enable transcripts."
-            ) from exc
-
-        errors: list[str] = []
-        for compute_type in ("int8", "int8_float32", "float32"):
-            try:
-                self._transcriber = WhisperModel(model_name, device="cpu", compute_type=compute_type)
-                self._transcriber_model_name = model_name
-                return self._transcriber
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"{compute_type}: {exc}")
-        raise RuntimeError(f"Unable to load transcription model {model_name}. {' | '.join(errors[:3])}")
-
-    def _update_alert_transcript(self, record_id: str, transcript: dict[str, Any]) -> None:
-        if not record_id:
-            return
-        with self.lock:
-            for alert in self.alerts:
-                if alert.get("recordId") != record_id:
-                    continue
-                alert["transcript"] = transcript
-                self._persist_alerts()
-                self._emit_event("transcript-updated")
-                return
 
     def _send_ntfy_notification(self, alert: dict[str, Any], stage: str) -> None:
         base_url = sanitize_base_url(self.ntfy_base_url) or NTFY_DEFAULT_BASE_URL
@@ -1069,60 +939,20 @@ def build_recording_name(parsed: dict[str, Any], record_id: str) -> str:
     return f"{timestamp}-{event_code}-{sender}-{record_id[:8]}.wav"
 
 
-def build_transcript_state(
-    status: str,
-    *,
-    model: str,
-    text: str = "",
-    language: str | None = None,
-    error: str | None = None,
-) -> dict[str, Any]:
-    return {
-        "status": status,
-        "text": text,
-        "language": language,
-        "model": sanitize_transcription_model(model),
-        "error": error,
-        "updatedAt": now_iso(),
-    }
-
-
-def build_transcript_markup(transcript: dict[str, Any] | None) -> str:
-    if not transcript:
-        return ""
-
-    status = str(transcript.get("status") or "")
-    text = escape(str(transcript.get("text") or ""))
-    model = escape(str(transcript.get("model") or TRANSCRIPTION_DEFAULT_MODEL))
-    language = escape(str(transcript.get("language") or "en"))
-    error_text = escape(str(transcript.get("error") or ""))
-
-    if status == "disabled":
-        body = "<div class=\"recording-status\">Transcript capture is disabled for this server.</div>"
-    elif status == "waiting":
-        body = "<div class=\"recording-status\">Transcript will start after the recording is finalized.</div>"
-    elif status == "pending":
-        body = f"<div class=\"recording-status\">Transcribing recording with {model}. This alert will update when the transcript is ready.</div>"
-    elif status == "error":
-        body = f"<div class=\"recording-status\">Transcript failed: {error_text or 'Unknown error'}</div>"
-    else:
-        body = (
-            f"<div class=\"transcript-text\">{text or 'No spoken transcript could be recognized.'}</div>"
-            f"<div class=\"muted\">Language {language} | Model {model}</div>"
-        )
-
-    return f"<div class=\"recording-block\"><span>Transcript</span>{body}</div>"
-
-
 def sanitize_part(value: str) -> str:
     return "".join(char if char.isalnum() else "-" for char in value).strip("-")[:32] or "item"
 
 
-def sanitize_transcription_model(value: str) -> str:
-    normalized = str(value or "").strip().lower()
-    if normalized in TRANSCRIPTION_ALLOWED_MODELS:
-        return normalized
-    return TRANSCRIPTION_DEFAULT_MODEL
+def detection_method_label_for_kind(source_kind: str) -> str:
+    normalized = str(source_kind or "").strip().lower()
+    labels = {
+        "server-device": "Server audio device",
+        "browser-offline-file": "Uploaded audio file",
+        "browser-url-file": "Remote URL file",
+        "browser-stream": "Browser live stream",
+        "browser-offline": "Browser offline decode",
+    }
+    return labels.get(normalized, "Decoded alert")
 
 
 def unique_ints(values: list[int]) -> list[int]:

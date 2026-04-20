@@ -41,6 +41,15 @@ FORWARDED_HEADERS = {
 }
 MONITOR = ServerAudioMonitor(ROOT_DIR)
 LOGGER = logging.getLogger("samecode")
+YOUTUBE_HOSTS = {
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "music.youtube.com",
+    "youtu.be",
+    "www.youtu.be",
+}
+YTDLP_AUDIO_FORMAT = "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/bestaudio/best"
 
 
 def configure_logging() -> None:
@@ -122,8 +131,8 @@ class SAMECodeHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/settings":
             self._handle_settings_update()
             return
-        if parsed.path == "/api/alerts/retranscribe":
-            self._handle_alert_retranscribe()
+        if parsed.path == "/api/alerts/import":
+            self._handle_import_alerts()
             return
         if parsed.path == "/api/alerts/clear":
             self._handle_clear_alerts()
@@ -209,8 +218,6 @@ class SAMECodeHandler(SimpleHTTPRequestHandler):
             ntfy_completed_direct_recording_link = payload.get("ntfyCompletedDirectRecordingLink")
             ntfy_notify_on_detected = payload.get("ntfyNotifyOnDetected")
             ntfy_notify_on_completed = payload.get("ntfyNotifyOnCompleted")
-            transcription_enabled = payload.get("transcriptionEnabled")
-            transcription_model = payload.get("transcriptionModel")
             settings = MONITOR.update_settings(
                 device_id=int(device_id) if device_id is not None else None,
                 pre_roll_seconds=int(pre_roll_seconds) if pre_roll_seconds is not None else None,
@@ -230,8 +237,6 @@ class SAMECodeHandler(SimpleHTTPRequestHandler):
                 ntfy_completed_direct_recording_link=bool(ntfy_completed_direct_recording_link) if ntfy_completed_direct_recording_link is not None else None,
                 ntfy_notify_on_detected=bool(ntfy_notify_on_detected) if ntfy_notify_on_detected is not None else None,
                 ntfy_notify_on_completed=bool(ntfy_notify_on_completed) if ntfy_notify_on_completed is not None else None,
-                transcription_enabled=bool(transcription_enabled) if transcription_enabled is not None else None,
-                transcription_model=str(transcription_model) if transcription_model is not None else None,
             )
             self._send_json({"ok": True, "settings": settings})
         except (ValueError, json.JSONDecodeError) as exc:
@@ -246,21 +251,19 @@ class SAMECodeHandler(SimpleHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001
             self.send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, f"Unable to clear alerts: {exc}")
 
-    def _handle_alert_retranscribe(self) -> None:
+    def _handle_import_alerts(self) -> None:
         try:
             payload = self._read_json_body()
-            record_id = str(payload.get("recordId") or "").strip()
-            if not record_id:
-                self.send_error_json(HTTPStatus.BAD_REQUEST, "Missing recordId.")
+            alerts = payload.get("alerts")
+            if not isinstance(alerts, list):
+                self.send_error_json(HTTPStatus.BAD_REQUEST, "Expected alerts to be an array.")
                 return
-            alert = MONITOR.request_retranscription(record_id)
-            self._send_json({"ok": True, "alert": alert, "monitor": MONITOR.get_status()})
-        except KeyError as exc:
-            self.send_error_json(HTTPStatus.NOT_FOUND, str(exc))
+            imported = MONITOR.import_external_alerts(alerts)
+            self._send_json({"ok": True, "imported": imported, "monitor": MONITOR.get_status()})
         except (ValueError, json.JSONDecodeError) as exc:
-            self.send_error_json(HTTPStatus.BAD_REQUEST, f"Invalid retranscribe request: {exc}")
+            self.send_error_json(HTTPStatus.BAD_REQUEST, f"Invalid alert import request: {exc}")
         except Exception as exc:  # noqa: BLE001
-            self.send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, f"Unable to retranscribe alert: {exc}")
+            self.send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, f"Unable to import alerts: {exc}")
 
     def _handle_rss(self) -> None:
         xml = MONITOR.build_rss(self._base_url())
@@ -375,10 +378,16 @@ class SAMECodeHandler(SimpleHTTPRequestHandler):
             self.send_error_json(HTTPStatus.BAD_REQUEST, "Only http and https URLs are supported.")
             return
 
+        try:
+            resolved_target = resolve_proxy_target(raw_url)
+        except Exception as exc:  # noqa: BLE001
+            self.send_error_json(HTTPStatus.BAD_GATEWAY, f"Unable to resolve remote audio URL: {exc}")
+            return
+
         request = urllib.request.Request(
-            raw_url,
+            resolved_target.url,
             method="HEAD" if head_only else "GET",
-            headers={"User-Agent": USER_AGENT},
+            headers=resolved_target.request_headers or {"User-Agent": USER_AGENT},
         )
 
         if range_header := self.headers.get("Range"):
@@ -395,7 +404,15 @@ class SAMECodeHandler(SimpleHTTPRequestHandler):
 
                 content_type = upstream.headers.get_content_type()
                 mime_type, _ = mimetypes.guess_type(raw_url)
-                final_type = upstream.headers.get("Content-Type") or mime_type or content_type or "application/octet-stream"
+                resolved_mime_type, _ = mimetypes.guess_type(resolved_target.url)
+                final_type = (
+                    upstream.headers.get("Content-Type")
+                    or resolved_target.content_type_hint
+                    or resolved_mime_type
+                    or mime_type
+                    or content_type
+                    or "application/octet-stream"
+                )
                 self.send_header("Content-Type", final_type)
 
                 for key, value in upstream.headers.items():
@@ -416,6 +433,93 @@ class SAMECodeHandler(SimpleHTTPRequestHandler):
             self.send_error_json(HTTPStatus(exc.code), message)
         except urllib.error.URLError as exc:
             self.send_error_json(HTTPStatus.BAD_GATEWAY, f"Unable to fetch remote audio URL: {exc.reason}")
+
+
+class ResolvedProxyTarget(NamedTuple):
+    url: str
+    request_headers: dict[str, str]
+    content_type_hint: str | None
+
+
+def resolve_proxy_target(raw_url: str) -> ResolvedProxyTarget:
+    if not is_youtube_url(raw_url):
+        return ResolvedProxyTarget(
+            url=raw_url,
+            request_headers={"User-Agent": USER_AGENT},
+            content_type_hint=None,
+        )
+
+    try:
+        from yt_dlp import YoutubeDL
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError("YouTube URL support requires yt-dlp to be installed.") from exc
+
+    options = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "noplaylist": True,
+        "extract_flat": False,
+        "format": YTDLP_AUDIO_FORMAT,
+    }
+    with YoutubeDL(options) as ydl:
+        info = ydl.extract_info(raw_url, download=False)
+
+    if info is None:
+        raise RuntimeError("yt-dlp did not return any media information.")
+
+    if isinstance(info, dict) and info.get("entries"):
+        first_entry = next((entry for entry in info["entries"] if entry), None)
+        if first_entry:
+            info = first_entry
+
+    media_url = str(info.get("url") or "").strip() if isinstance(info, dict) else ""
+    if not media_url:
+        raise RuntimeError("No playable audio stream URL was returned for this YouTube link.")
+
+    request_headers = normalize_request_headers(info.get("http_headers") if isinstance(info, dict) else {})
+    content_type_hint = guess_content_type_hint(str(info.get("ext") or "")) if isinstance(info, dict) else None
+    if "User-Agent" not in request_headers:
+        request_headers["User-Agent"] = USER_AGENT
+    return ResolvedProxyTarget(
+        url=media_url,
+        request_headers=request_headers,
+        content_type_hint=content_type_hint,
+    )
+
+
+def is_youtube_url(raw_url: str) -> bool:
+    parsed = urllib.parse.urlparse(str(raw_url).strip())
+    hostname = parsed.netloc.lower().split(":")[0]
+    return hostname in YOUTUBE_HOSTS
+
+
+def normalize_request_headers(headers: object) -> dict[str, str]:
+    if not isinstance(headers, dict):
+        return {}
+    normalized: dict[str, str] = {}
+    for key, value in headers.items():
+        header_name = str(key).strip()
+        header_value = str(value).strip()
+        if not header_name or not header_value:
+            continue
+        if header_name.lower() == "host":
+            continue
+        normalized[header_name] = header_value
+    return normalized
+
+
+def guess_content_type_hint(extension: str) -> str | None:
+    normalized = str(extension).strip().lower().lstrip(".")
+    if normalized == "m4a":
+        return "audio/mp4"
+    if normalized == "webm":
+        return "audio/webm"
+    if normalized == "mp3":
+        return "audio/mpeg"
+    if normalized == "ogg":
+        return "audio/ogg"
+    return None
 
 
 class SAMECodeCli:

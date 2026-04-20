@@ -33,15 +33,6 @@ SAMECode is not meant to be relied on as an actual life-safety alerting program.
 - Stores alert history and server settings locally
 - Clears and updates alerts from the server side, not just in the browser
 
-## Alert Transcripts
-
-- Can generate local AI transcripts from completed spoken alert recordings
-- Starts transcription after the recording file is finalized
-- Updates the same alert when the transcript is ready
-- Lets you re-run transcription for a saved alert with the currently selected transcript model
-- Supports saved transcript settings and model selection on the server side
-- Defaults to `small.en` after weather-radio testing, and can be raised further for difficult audio
-
 ## RSS Feed
 
 - Generates an RSS feed for captured alerts
@@ -62,6 +53,17 @@ SAMECode is not meant to be relied on as an actual life-safety alerting program.
 - `Server` mode runs the local server and shows a built-in server console
 - `Client` mode opens the SAMECode app against an existing SAMECode server
 - `Both` mode runs the local server, shows the server console, and opens the client window
+- The launcher remembers the last mode and launch settings you used
+- The launcher can also enable automatic startup at sign-in from a checkbox
+
+## Desktop Launch Arguments
+
+- `SAMECode.exe --server` launches the local server and server console
+- `SAMECode.exe --client --server-url http://127.0.0.1:8000` launches the client against an existing server
+- `SAMECode.exe --both` launches the local server, server console, and client window together
+- `SAMECode.exe --server --auto-start-monitor` auto-starts the server audio monitor using the saved device and saved timing settings
+- `SAMECode.exe --both --auto-start-monitor --device-id 3 --pre-roll 10 --max-record 180` auto-starts monitoring with explicit values
+- `SAMECode.exe --server --port 8010` starts the local server on a different port
 
 ## Server Console
 
