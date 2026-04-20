@@ -122,6 +122,9 @@ class SAMECodeHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/settings":
             self._handle_settings_update()
             return
+        if parsed.path == "/api/alerts/retranscribe":
+            self._handle_alert_retranscribe()
+            return
         if parsed.path == "/api/alerts/clear":
             self._handle_clear_alerts()
             return
@@ -206,6 +209,8 @@ class SAMECodeHandler(SimpleHTTPRequestHandler):
             ntfy_completed_direct_recording_link = payload.get("ntfyCompletedDirectRecordingLink")
             ntfy_notify_on_detected = payload.get("ntfyNotifyOnDetected")
             ntfy_notify_on_completed = payload.get("ntfyNotifyOnCompleted")
+            transcription_enabled = payload.get("transcriptionEnabled")
+            transcription_model = payload.get("transcriptionModel")
             settings = MONITOR.update_settings(
                 device_id=int(device_id) if device_id is not None else None,
                 pre_roll_seconds=int(pre_roll_seconds) if pre_roll_seconds is not None else None,
@@ -225,6 +230,8 @@ class SAMECodeHandler(SimpleHTTPRequestHandler):
                 ntfy_completed_direct_recording_link=bool(ntfy_completed_direct_recording_link) if ntfy_completed_direct_recording_link is not None else None,
                 ntfy_notify_on_detected=bool(ntfy_notify_on_detected) if ntfy_notify_on_detected is not None else None,
                 ntfy_notify_on_completed=bool(ntfy_notify_on_completed) if ntfy_notify_on_completed is not None else None,
+                transcription_enabled=bool(transcription_enabled) if transcription_enabled is not None else None,
+                transcription_model=str(transcription_model) if transcription_model is not None else None,
             )
             self._send_json({"ok": True, "settings": settings})
         except (ValueError, json.JSONDecodeError) as exc:
@@ -238,6 +245,22 @@ class SAMECodeHandler(SimpleHTTPRequestHandler):
             self._send_json({"ok": True, "monitor": MONITOR.get_status()})
         except Exception as exc:  # noqa: BLE001
             self.send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, f"Unable to clear alerts: {exc}")
+
+    def _handle_alert_retranscribe(self) -> None:
+        try:
+            payload = self._read_json_body()
+            record_id = str(payload.get("recordId") or "").strip()
+            if not record_id:
+                self.send_error_json(HTTPStatus.BAD_REQUEST, "Missing recordId.")
+                return
+            alert = MONITOR.request_retranscription(record_id)
+            self._send_json({"ok": True, "alert": alert, "monitor": MONITOR.get_status()})
+        except KeyError as exc:
+            self.send_error_json(HTTPStatus.NOT_FOUND, str(exc))
+        except (ValueError, json.JSONDecodeError) as exc:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, f"Invalid retranscribe request: {exc}")
+        except Exception as exc:  # noqa: BLE001
+            self.send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, f"Unable to retranscribe alert: {exc}")
 
     def _handle_rss(self) -> None:
         xml = MONITOR.build_rss(self._base_url())

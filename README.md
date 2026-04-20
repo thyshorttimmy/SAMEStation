@@ -33,6 +33,15 @@ SAMECode is not meant to be relied on as an actual life-safety alerting program.
 - Stores alert history and server settings locally
 - Clears and updates alerts from the server side, not just in the browser
 
+## Alert Transcripts
+
+- Can generate local AI transcripts from completed spoken alert recordings
+- Starts transcription after the recording file is finalized
+- Updates the same alert when the transcript is ready
+- Lets you re-run transcription for a saved alert with the currently selected transcript model
+- Supports saved transcript settings and model selection on the server side
+- Defaults to `small.en` after weather-radio testing, and can be raised further for difficult audio
+
 ## RSS Feed
 
 - Generates an RSS feed for captured alerts

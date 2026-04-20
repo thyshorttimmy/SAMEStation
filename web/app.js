@@ -47,6 +47,8 @@ const elements = {
   startLiveMonitorButton: document.querySelector("#start-live-monitor-button"),
   stopLiveMonitorButton: document.querySelector("#stop-live-monitor-button"),
   autoLivePlaybackOnAlert: document.querySelector("#auto-live-playback-on-alert"),
+  transcriptionEnabled: document.querySelector("#transcription-enabled"),
+  transcriptionModel: document.querySelector("#transcription-model"),
   ntfyEnabled: document.querySelector("#ntfy-enabled"),
   ntfyBaseUrl: document.querySelector("#ntfy-base-url"),
   ntfyTopic: document.querySelector("#ntfy-topic"),
@@ -81,10 +83,13 @@ async function boot() {
   elements.startLiveMonitorButton.addEventListener("click", handleStartServerLiveAudio);
   elements.stopLiveMonitorButton.addEventListener("click", handleStopServerLiveAudio);
   elements.clearResultsButton.addEventListener("click", handleClearAlerts);
+  elements.alertsList.addEventListener("click", handleAlertsListClick);
   elements.deviceSelect.addEventListener("change", persistServerSettings);
   elements.preRollSeconds.addEventListener("change", persistServerSettings);
   elements.maxRecordSeconds.addEventListener("change", persistServerSettings);
   elements.autoLivePlaybackOnAlert.addEventListener("change", persistServerSettings);
+  elements.transcriptionEnabled.addEventListener("change", persistServerSettings);
+  elements.transcriptionModel.addEventListener("change", persistServerSettings);
   elements.ntfyEnabled.addEventListener("change", persistServerSettings);
   elements.ntfyBaseUrl.addEventListener("change", persistServerSettings);
   elements.ntfyTopic.addEventListener("change", persistServerSettings);
@@ -354,6 +359,40 @@ async function handleStopServerMonitor() {
   }
 }
 
+async function handleAlertsListClick(event) {
+  const retranscribeButton = event.target.closest("[data-retranscribe-record-id]");
+  if (!retranscribeButton) {
+    return;
+  }
+  const recordId = retranscribeButton.getAttribute("data-retranscribe-record-id");
+  if (!recordId) {
+    return;
+  }
+
+  try {
+    retranscribeButton.disabled = true;
+    const response = await fetch("/api/alerts/retranscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ recordId }),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || `Retranscribe failed with ${response.status}.`);
+    }
+    const payload = await response.json();
+    if (payload.monitor) {
+      applyServerStatus(payload.monitor);
+    }
+    addActivity("Transcript requeued", `Alert ${recordId.slice(0, 8)} was sent back through the transcription worker.`, "info");
+    render();
+  } catch (error) {
+    failWithError("Unable to retranscribe alert.", error);
+  } finally {
+    retranscribeButton.disabled = false;
+  }
+}
+
 function connectServerEvents() {
   if (state.eventsSource) {
     state.eventsSource.close();
@@ -456,6 +495,8 @@ async function persistServerSettings(silent = true) {
         preRollSeconds: Number(elements.preRollSeconds.value || 10),
         maxRecordSeconds: Number(elements.maxRecordSeconds.value || 180),
         autoLivePlaybackOnAlert: elements.autoLivePlaybackOnAlert.checked,
+        transcriptionEnabled: elements.transcriptionEnabled.checked,
+        transcriptionModel: elements.transcriptionModel.value,
         ntfyEnabled: elements.ntfyEnabled.checked,
         ntfyBaseUrl: elements.ntfyBaseUrl.value.trim(),
         ntfyTopic: elements.ntfyTopic.value.trim(),
@@ -651,6 +692,12 @@ function applyServerSettings(settings) {
     state.autoLivePlaybackOnAlert = Boolean(settings.autoLivePlaybackOnAlert);
     elements.autoLivePlaybackOnAlert.checked = state.autoLivePlaybackOnAlert;
   }
+  if (settings.transcriptionEnabled != null) {
+    elements.transcriptionEnabled.checked = Boolean(settings.transcriptionEnabled);
+  }
+  if (settings.transcriptionModel != null) {
+    elements.transcriptionModel.value = String(settings.transcriptionModel);
+  }
   if (settings.ntfyEnabled != null) {
     elements.ntfyEnabled.checked = Boolean(settings.ntfyEnabled);
   }
@@ -745,6 +792,9 @@ function renderAlerts(alerts) {
       recordingStatus: alert.recording?.status || null,
       recordingUrl: alert.recording?.url || null,
       endReason: alert.recording?.endReason || null,
+      transcriptStatus: alert.transcript?.status || null,
+      transcriptText: alert.transcript?.text || null,
+      transcriptError: alert.transcript?.error || null,
       sourceLabel: alert.sourceLabel || null,
       completedAt: alert.completedAt || null,
     })),
@@ -794,6 +844,14 @@ function renderAlerts(alerts) {
               </div>
             `
         : "";
+      const transcriptMarkup = formatTranscriptMarkup(alert.transcript);
+      const retranscribeMarkup = alert.recordId && alert.recording?.url
+        ? `
+            <div class="row inline-actions">
+              <button type="button" class="ghost compact-button" data-retranscribe-record-id="${escapeHtml(alert.recordId)}">Retranscribe</button>
+            </div>
+          `
+        : "";
       const statusPillClass = alert.recording?.status === "recording" ? "warn" : alert.repeatCount >= 3 ? "" : "warn";
       const statusLabel = alert.recording?.status === "recording" ? "live capture" : `${alert.repeatCount || 1} repeat${alert.repeatCount === 1 ? "" : "s"}`;
       return `
@@ -812,6 +870,8 @@ function renderAlerts(alerts) {
             <div><span>Locations</span>${locationSummary}</div>
           </div>
           ${recordingMarkup}
+          ${transcriptMarkup}
+          ${retranscribeMarkup}
           <div class="raw-header">${escapeHtml(rawBurstText)}</div>
         </article>
       `;
@@ -867,6 +927,41 @@ function augmentAlertLocations(alert) {
       };
     }),
   };
+}
+
+function formatTranscriptMarkup(transcript) {
+  if (!transcript) {
+    return "";
+  }
+
+  const status = String(transcript.status || "");
+  const model = escapeHtml(transcript.model || "tiny.en");
+  const language = escapeHtml(transcript.language || "en");
+  const text = escapeHtml(transcript.text || "");
+  const error = escapeHtml(transcript.error || "");
+
+  let body = "";
+  if (status === "disabled") {
+    body = `<div class="recording-status">Transcript capture is disabled for this server.</div>`;
+  } else if (status === "waiting") {
+    body = `<div class="recording-status">Transcript will start after the recording is finalized.</div>`;
+  } else if (status === "pending") {
+    body = `<div class="recording-status">Transcribing recording with ${model}. This alert will update when the transcript is ready.</div>`;
+  } else if (status === "error") {
+    body = `<div class="recording-status">Transcript failed: ${error || "Unknown error"}</div>`;
+  } else {
+    body = `
+      <div class="transcript-text">${text || "No spoken transcript could be recognized."}</div>
+      <div class="muted">Language ${language} | Model ${model}</div>
+    `;
+  }
+
+  return `
+    <div class="recording-block">
+      <span>Transcript</span>
+      ${body}
+    </div>
+  `;
 }
 
 async function connectServerDeviceMonitorAudio() {
