@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import logging
 import subprocess
@@ -12,9 +13,6 @@ from pathlib import Path
 from queue import Empty, SimpleQueue
 from typing import Literal
 
-import webview
-
-from app import DEFAULT_PORT, MONITOR, SAMECodeCli, configure_logging, create_server_context, shutdown_server_context
 from same_paths import app_root
 
 
@@ -23,11 +21,19 @@ CLIENT_WIDTH = 1360
 CLIENT_HEIGHT = 920
 CONSOLE_WIDTH = 900
 CONSOLE_HEIGHT = 620
+DEFAULT_PORT = 8000
 DEFAULT_SERVER_URL = f"http://127.0.0.1:{DEFAULT_PORT}"
 LOG_FORMAT = "%(asctime)s | %(levelname)s | %(message)s"
 LAUNCHER_SETTINGS_PATH = app_root() / "data" / "launcher-settings.json"
 AUTO_START_TASK_NAME = "SAMECode Auto Start"
 ModeName = Literal["server", "client", "both"]
+DependencySpec = tuple[str, str, str, set[ModeName]]
+RUNTIME_DEPENDENCIES: tuple[DependencySpec, ...] = (
+    ("webview", "pywebview[winforms]", "pywebview", {"client", "server", "both"}),
+    ("numpy", "numpy", "numpy", {"server", "both"}),
+    ("sounddevice", "sounddevice", "sounddevice", {"server", "both"}),
+    ("yt_dlp", "yt-dlp", "yt-dlp", {"server", "both"}),
+)
 
 CONSOLE_HTML = """
 <!doctype html>
@@ -256,15 +262,22 @@ class DesktopRuntime:
         self.selection = selection
         self.context = None
         self.server_thread: threading.Thread | None = None
-        self.console_cli: SAMECodeCli | None = None
-        self.console_window: webview.Window | None = None
-        self.app_window: webview.Window | None = None
+        self.console_cli = None
+        self.console_window = None
+        self.app_window = None
         self.log_handler: BufferedLogHandler | None = None
         self._shutdown_lock = threading.Lock()
         self._shutdown_started = False
+        self._webview = None
+        self._monitor = None
+        self._samecode_cli_cls = None
+        self._configure_logging = None
+        self._create_server_context = None
+        self._shutdown_server_context = None
 
     def prepare(self) -> None:
-        configure_logging()
+        self._load_runtime_components()
+        self._configure_logging()
         if self.selection.mode in {"server", "both"}:
             self._start_local_server()
             if self.selection.auto_start_monitor:
@@ -281,8 +294,26 @@ class DesktopRuntime:
             raise RuntimeError("Local server has not been started.")
         return f"http://127.0.0.1:{self.context.port}"
 
+    def start_event_loop(self) -> None:
+        self._load_runtime_components()
+        self._webview.start(private_mode=False, storage_path=str(app_root() / "webview-storage"))
+
+    def _load_runtime_components(self) -> None:
+        if self._webview is not None:
+            return
+        import webview as webview_module
+
+        from app import MONITOR, SAMECodeCli, configure_logging, create_server_context, shutdown_server_context
+
+        self._webview = webview_module
+        self._monitor = MONITOR
+        self._samecode_cli_cls = SAMECodeCli
+        self._configure_logging = configure_logging
+        self._create_server_context = create_server_context
+        self._shutdown_server_context = shutdown_server_context
+
     def _start_local_server(self) -> None:
-        self.context = create_server_context(port=self.selection.port, enable_cli=False)
+        self.context = self._create_server_context(port=self.selection.port, enable_cli=False)
         self.server_thread = threading.Thread(
             target=self.context.server.serve_forever,
             name="samecode-http",
@@ -292,7 +323,7 @@ class DesktopRuntime:
         logging.getLogger("samecode").info("SAMECode listening on %s", self.local_server_url)
 
     def _auto_start_server_monitor(self) -> None:
-        settings = MONITOR.get_settings()
+        settings = self._monitor.get_settings()
         device_id = self.selection.auto_start_device_id
         if device_id is None:
             saved_device = settings.get("deviceId")
@@ -311,7 +342,7 @@ class DesktopRuntime:
             else int(settings.get("maxRecordSeconds") or 180)
         )
 
-        MONITOR.start(
+        self._monitor.start(
             int(device_id),
             pre_roll_seconds=int(pre_roll_seconds),
             max_record_seconds=int(max_record_seconds),
@@ -328,11 +359,11 @@ class DesktopRuntime:
             raise RuntimeError("Server context missing.")
         self.log_handler = BufferedLogHandler()
         logging.getLogger().addHandler(self.log_handler)
-        self.console_cli = SAMECodeCli(self.context.server, MONITOR, self.context.port)
+        self.console_cli = self._samecode_cli_cls(self.context.server, self._monitor, self.context.port)
         self.console_cli.execute_command("help")
         summary = f"Local server ready at {self.local_server_url}. Close this window or run shutdown to stop the server."
         api = ServerConsoleApi(self.console_cli, self.log_handler, summary, self.shutdown)
-        self.console_window = webview.create_window(
+        self.console_window = self._webview.create_window(
             f"{WINDOW_TITLE} Server",
             html=CONSOLE_HTML,
             js_api=api,
@@ -343,7 +374,7 @@ class DesktopRuntime:
         self.console_window.events.closed += lambda *_args: self.shutdown()
 
     def _create_app_window(self, url: str, *, title: str) -> None:
-        self.app_window = webview.create_window(
+        self.app_window = self._webview.create_window(
             title,
             url,
             width=CLIENT_WIDTH,
@@ -372,7 +403,7 @@ class DesktopRuntime:
 
         if self.context is not None:
             try:
-                shutdown_server_context(self.context)
+                self._shutdown_server_context(self.context)
             except Exception:
                 pass
 
@@ -497,6 +528,48 @@ def build_auto_start_command_line(selection: LaunchSelection) -> str:
     return " ".join(parts)
 
 
+def dependency_specs_for_mode(mode: ModeName) -> list[DependencySpec]:
+    return [spec for spec in RUNTIME_DEPENDENCIES if mode in spec[3]]
+
+
+def missing_dependencies_for_mode(mode: ModeName) -> list[DependencySpec]:
+    missing: list[DependencySpec] = []
+    for spec in dependency_specs_for_mode(mode):
+        module_name = spec[0]
+        try:
+            importlib.import_module(module_name)
+        except Exception:  # noqa: BLE001
+            missing.append(spec)
+    return missing
+
+
+def format_missing_dependencies(missing: list[DependencySpec]) -> str:
+    labels = [spec[2] for spec in missing]
+    if not labels:
+        return "All required dependencies are ready for this launch mode."
+    return f"Missing dependencies: {', '.join(labels)}."
+
+
+def install_missing_dependencies_for_mode(mode: ModeName) -> str:
+    if getattr(sys, "frozen", False):
+        raise RuntimeError("The packaged EXE already includes its Python dependencies. Rebuild the app if the bundle is incomplete.")
+    missing = missing_dependencies_for_mode(mode)
+    if not missing:
+        return "All required dependencies are already installed."
+    package_specs: list[str] = []
+    seen: set[str] = set()
+    for _module_name, package_name, _label, _modes in missing:
+        if package_name in seen:
+            continue
+        seen.add(package_name)
+        package_specs.append(package_name)
+    command = [str(Path(sys.executable).resolve()), "-m", "pip", "install", *package_specs]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Unable to install missing dependencies.")
+    return f"Installed: {', '.join(package_specs)}"
+
+
 def quote_windows_arg(value: str) -> str:
     escaped = str(value).replace('"', '\\"')
     return f'"{escaped}"'
@@ -545,11 +618,14 @@ def choose_launch_selection(default_selection: LaunchSelection) -> LaunchSelecti
         "auto_start_with_windows": default_selection.auto_start_with_windows,
         "confirmed": False,
     }
+    dependency_state: dict[str, list[DependencySpec]] = {
+        "missing": [],
+    }
 
     root = tk.Tk()
     root.title("Launch SAMECode")
-    root.geometry("640x620")
-    root.minsize(620, 600)
+    root.geometry("680x720")
+    root.minsize(640, 680)
     root.configure(bg="#f4f1e8")
     root.resizable(True, True)
 
@@ -574,6 +650,7 @@ def choose_launch_selection(default_selection: LaunchSelection) -> LaunchSelecti
     auto_start_monitor_var = tk.BooleanVar(value=default_selection.auto_start_monitor)
     auto_start_with_windows_var = tk.BooleanVar(value=default_selection.auto_start_with_windows)
     error_var = tk.StringVar(value="")
+    dependency_var = tk.StringVar(value="")
 
     options = [
         ("server", "Server", "Run the local SAMECode server and show the server console window only."),
@@ -609,6 +686,18 @@ def choose_launch_selection(default_selection: LaunchSelection) -> LaunchSelecti
         variable=auto_start_with_windows_var,
     ).pack(anchor="w", pady=(8, 0))
 
+    dependency_frame = ttk.Frame(outer)
+    dependency_frame.pack(fill="x", pady=(18, 0))
+    ttk.Label(dependency_frame, text="Dependencies").pack(anchor="w")
+    ttk.Label(
+        dependency_frame,
+        text="Check whether this launch mode has everything it needs, or install any missing Python packages automatically.",
+        wraplength=560,
+    ).pack(anchor="w", pady=(4, 8))
+    ttk.Label(dependency_frame, textvariable=dependency_var, wraplength=560, foreground="#39454a").pack(anchor="w")
+    dependency_actions = ttk.Frame(dependency_frame)
+    dependency_actions.pack(anchor="w", pady=(10, 0))
+
     def sync_field_state(*_args) -> None:
         state = "normal" if mode_var.get() == "client" else "disabled"
         server_url_entry.configure(state=state)
@@ -619,8 +708,33 @@ def choose_launch_selection(default_selection: LaunchSelection) -> LaunchSelecti
             label = str(child.cget("text"))
             if "server monitor" in label:
                 child.configure(state=monitor_state)
+        refresh_dependency_status()
+
+    def refresh_dependency_status(success_message: str | None = None) -> None:
+        missing = missing_dependencies_for_mode(normalize_mode(mode_var.get()))
+        dependency_state["missing"] = missing
+        if success_message:
+            dependency_var.set(f"{success_message}\n{format_missing_dependencies(missing)}")
+        else:
+            dependency_var.set(format_missing_dependencies(missing))
+        install_state = "disabled" if not missing or getattr(sys, "frozen", False) else "normal"
+        install_button.configure(state=install_state)
+
+    def install_dependencies() -> None:
+        error_var.set("")
+        dependency_var.set("Installing missing dependencies for the selected mode...")
+        root.update_idletasks()
+        try:
+            message = install_missing_dependencies_for_mode(normalize_mode(mode_var.get()))
+            refresh_dependency_status(success_message=message)
+        except RuntimeError as exc:
+            error_var.set(str(exc))
+            refresh_dependency_status()
 
     mode_var.trace_add("write", sync_field_state)
+    ttk.Button(dependency_actions, text="Check Dependencies", command=refresh_dependency_status).pack(side="left")
+    install_button = ttk.Button(dependency_actions, text="Install Missing", command=install_dependencies)
+    install_button.pack(side="left", padx=(10, 0))
     sync_field_state()
 
     ttk.Label(outer, textvariable=error_var, foreground="#a32117", wraplength=500).pack(anchor="w", pady=(12, 0))
@@ -639,6 +753,10 @@ def choose_launch_selection(default_selection: LaunchSelection) -> LaunchSelecti
             result["server_url"] = normalize_server_url(server_url_var.get())
             result["auto_start_monitor"] = bool(auto_start_monitor_var.get())
             result["auto_start_with_windows"] = bool(auto_start_with_windows_var.get())
+            refresh_dependency_status()
+            if dependency_state["missing"]:
+                error_var.set("Install the missing dependencies before launching this mode.")
+                return
             result["confirmed"] = True
             root.destroy()
         except ValueError as exc:
@@ -763,6 +881,13 @@ def main() -> None:
     if selection is None:
         return
 
+    missing = missing_dependencies_for_mode(selection.mode)
+    if missing:
+        parser.error(
+            f"{format_missing_dependencies(missing)} Run the launcher without explicit mode flags to use the dependency installer first."
+        )
+        return
+
     try:
         save_launcher_settings(selection)
         sync_windows_auto_start(selection)
@@ -773,7 +898,7 @@ def main() -> None:
     runtime = DesktopRuntime(selection)
     runtime.prepare()
     try:
-        webview.start(private_mode=False, storage_path=str(app_root() / "webview-storage"))
+        runtime.start_event_loop()
     finally:
         runtime.shutdown()
         time.sleep(0.25)
