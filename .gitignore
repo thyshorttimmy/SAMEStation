@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+data/alerts.json
+data/settings.json
+data/recordings/
+
+server.stdout.log
+server.stderr.log

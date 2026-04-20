@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SAMECode</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">NOAA / NWS S.A.M.E. Decoder</p>
+          <h1>SAMECode</h1>
+          <p class="lede">
+            Decode SAME headers from local files, remote audio, live streams, and a server-side always-on audio device monitor with saved recordings and RSS output.
+          </p>
+        </div>
+        <div class="hero-status">
+          <div class="status-card">
+            <span class="label">Decoder</span>
+            <strong id="decoder-state">Idle</strong>
+          </div>
+          <div class="status-card">
+            <span class="label">Input</span>
+            <strong id="source-state">None</strong>
+          </div>
+          <div class="status-card">
+            <span class="label">Alerts</span>
+            <strong id="alert-count">0</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="grid">
+        <article class="panel">
+          <h2>Audio File</h2>
+          <p class="panel-copy">Upload a local file and run an offline decode pass in the browser.</p>
+          <input id="file-input" type="file" accept="audio/*" />
+          <button id="decode-file-button" class="primary">Decode File</button>
+        </article>
+
+        <article class="panel">
+          <h2>Remote URL</h2>
+          <p class="panel-copy">Point at a sound file or a live stream and choose how to process it.</p>
+          <label class="field">
+            <span>Audio URL</span>
+            <input id="url-input" type="url" placeholder="https://example.com/weather-radio-stream.mp3" />
+          </label>
+          <div class="row">
+            <button id="decode-url-button" class="primary">Decode URL File</button>
+            <button id="start-stream-button">Monitor Live Stream</button>
+            <button id="stop-stream-button" class="ghost">Stop Stream</button>
+          </div>
+        </article>
+
+        <article class="panel">
+          <h2>Server Audio Device</h2>
+          <p class="panel-copy">Runs at the server level for continuous monitoring, recording 10 seconds before a detected header and stopping at EOM or your timeout.</p>
+          <div class="row">
+            <select id="device-select"></select>
+            <button id="refresh-devices-button">Refresh</button>
+          </div>
+          <div class="row">
+            <label class="field compact-field">
+              <span>Pre-roll (s)</span>
+              <input id="pre-roll-seconds" type="number" min="0" max="60" value="10" />
+            </label>
+            <label class="field compact-field">
+              <span>Max record (s)</span>
+              <input id="max-record-seconds" type="number" min="15" max="1800" value="180" />
+            </label>
+          </div>
+          <div class="row">
+            <button id="start-device-button" class="primary">Start Server Monitor</button>
+            <button id="stop-device-button" class="ghost">Stop Server Monitor</button>
+          </div>
+          <label class="field checkbox-field">
+            <input id="auto-live-playback-on-alert" type="checkbox" />
+            <span>Auto-start the live monitor when an alert is detected</span>
+          </label>
+          <div class="status-inline">
+            <span class="label">Server Monitor</span>
+            <strong id="server-monitor-status">Stopped</strong>
+          </div>
+          <a id="rss-link" class="inline-link" href="/alerts.xml" target="_blank" rel="noreferrer">Open Alert RSS Feed</a>
+        </article>
+      </section>
+
+      <section class="panel">
+        <h2>ntfy Phone Alerts</h2>
+        <p class="panel-copy">Send free push notifications to your phone through ntfy when the server monitor detects or finishes recording an alert.</p>
+        <div class="row">
+          <label class="field compact-field">
+            <span>Server URL</span>
+            <input id="ntfy-base-url" type="url" placeholder="https://ntfy.sh" />
+          </label>
+          <label class="field compact-field">
+            <span>Topic</span>
+            <input id="ntfy-topic" type="text" placeholder="my-private-same-topic" />
+          </label>
+          <label class="field compact-field">
+            <span>Priority</span>
+            <select id="ntfy-priority">
+              <option value="urgent">Urgent</option>
+              <option value="high">High</option>
+              <option value="default">Default</option>
+              <option value="low">Low</option>
+              <option value="min">Min</option>
+            </select>
+          </label>
+        </div>
+        <div class="row">
+          <label class="field compact-field">
+            <span>Tags</span>
+            <input id="ntfy-tags" type="text" placeholder="warning,radio" />
+          </label>
+          <label class="field compact-field">
+            <span>Click URL</span>
+            <input id="ntfy-click-url" type="url" placeholder="http://192.168.1.50:8000" />
+          </label>
+        </div>
+        <div class="row">
+          <label class="field checkbox-field">
+            <input id="ntfy-enabled" type="checkbox" />
+            <span>Enable ntfy notifications</span>
+          </label>
+          <label class="field checkbox-field">
+            <input id="ntfy-notify-on-detected" type="checkbox" />
+            <span>Notify when an alert is first detected</span>
+          </label>
+          <label class="field checkbox-field">
+            <input id="ntfy-notify-on-completed" type="checkbox" />
+            <span>Notify when recording is finished</span>
+          </label>
+        </div>
+      </section>
+
+      <section class="monitor panel">
+        <div class="monitor-header">
+          <div>
+            <h2>Live Monitor</h2>
+            <p class="panel-copy">Browser stream monitoring is still available for URL sources, while audio-device monitoring now runs continuously in the Python server.</p>
+          </div>
+          <p id="monitor-copy" class="muted">Waiting for a stream or server-side device monitor.</p>
+        </div>
+        <div class="row">
+          <button id="start-live-monitor-button">Listen To Server Device</button>
+          <button id="stop-live-monitor-button" class="ghost">Stop Listening</button>
+        </div>
+        <audio id="stream-audio" controls preload="none"></audio>
+      </section>
+
+      <section class="results-grid">
+        <article class="panel">
+          <div class="section-header">
+            <h2>Decoded Alerts</h2>
+            <button id="clear-results-button" class="ghost">Clear Alerts</button>
+          </div>
+          <div id="alerts-list" class="alerts-list empty-state">No SAME headers decoded yet.</div>
+        </article>
+
+        <article class="panel">
+          <h2>Activity</h2>
+          <div id="activity-log" class="activity-log empty-state">Decoder events and status updates will appear here.</div>
+        </article>
+      </section>
+    </main>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
