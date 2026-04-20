@@ -9,3 +9,7 @@ data/recordings/
 
 server.stdout.log
 server.stderr.log
+
+build/
+dist/
+*.spec

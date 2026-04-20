@@ -1,97 +1,55 @@
 # SAMECode
 
-SAMECode is a local web app that decodes NOAA Weather Radio `S.A.M.E.` headers from:
+SAMECode is a local NOAA Weather Radio `S.A.M.E.` decoder and alert capture app.
 
-- Local audio files your browser can decode
-- Direct links to audio files
-- Live stream URLs
-- A server-side audio input device that can run continuously
+## What The App Does
 
-The server-side device monitor can:
+- Decodes `S.A.M.E.` headers from local audio files
+- Decodes from direct audio-file links and live stream URLs
+- Monitors a server-side audio input device continuously
+- Resolves SAME/FIPS location codes to real county and location names
+- Detects repeated header bursts and `NNNN` end-of-message bursts
 
-- Listen on a chosen Windows audio input device all the time
-- Keep a configurable pre-roll buffer, defaulting to `10` seconds
-- Start recording when a SAME header is detected
-- Stop on detected `NNNN` EOM bursts or a configurable timeout
-- Save `.wav` recordings under [data/recordings](C:/Users/tyler/Desktop/SAMECODE/data/recordings)
-- Publish captured alerts with recording enclosures through [alerts.xml](http://127.0.0.1:8000/alerts.xml)
-- Push free phone notifications through `ntfy`
+## Server Audio Monitoring
 
-## Install
+- Watches a selected Windows audio input device on the server side
+- Keeps a configurable pre-alert audio buffer before detection
+- Starts recording as soon as an alert is detected
+- Stops after the full EOM burst sequence, with timeout fail-safes
+- Saves alert audio as `.wav` files
+- Supports live listening to the monitored server audio
 
-The bundled runtime already has `numpy`, but the always-on server monitor needs `sounddevice`:
+## Alerts And Recordings
 
-```powershell
-& "C:\Users\tyler\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" -m pip install -r requirements.txt
-```
+- Publishes alerts immediately when detected, then updates them when recording finishes
+- Keeps decoded alert details, raw burst history, and recording status together
+- Shows finished recordings with in-app playback
+- Stores alert history and server settings locally
+- Clears and updates alerts from the server side, not just in the browser
 
-## Run
+## RSS Feed
 
-```powershell
-& "C:\Users\tyler\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" app.py
-```
+- Generates an RSS feed for captured alerts
+- Includes the decoded alert details in each feed item
+- Adds the recorded audio file to the alert when one is available
+- Keeps one feed item per alert and updates it as recording completes
 
-Then open [http://127.0.0.1:8000](http://127.0.0.1:8000).
+## ntfy Phone Notifications
 
-## CLI
+- Sends free phone alerts through `ntfy`
+- Supports separate notifications for first detection and recording completion
+- Supports separate click targets for detected alerts and completed alerts
+- Can optionally open completed alerts directly on the saved recording
+- Lets warnings, watches, advisories, tests, and other alert types use different urgency levels
 
-While the server is running, the terminal now shows timestamped logs and accepts commands:
+## Desktop App Modes
 
-```text
-help
-status
-devices
-settings
-alerts 10
-start 3 10 180
-stop
-clear
-open
-shutdown
-```
+- `Server` mode runs the local server and shows a built-in server console
+- `Client` mode opens the SAMECode app against an existing SAMECode server
+- `Both` mode runs the local server, shows the server console, and opens the client window
 
-Notes:
+## Server Console
 
-- `start <deviceId> [preRoll] [maxRecord]` starts the always-on device monitor from the terminal.
-- `devices` lists available server-side input devices and their numeric IDs.
-- `shutdown` cleanly stops the web server and monitor.
-
-## ntfy Phone Alerts
-
-To get push notifications on your phone for detected alerts:
-
-1. Install the `ntfy` app on your phone.
-2. Subscribe to a topic name you choose, such as `my-private-same-topic`.
-3. In the SAMECode web console, open `ntfy Phone Alerts`.
-4. Set:
-   - `Server URL` to `https://ntfy.sh` unless you self-host ntfy
-   - `Topic` to the topic you subscribed to
-   - optionally `Click URL` to the reachable URL of this SAMECode server, for example `http://192.168.1.50:8000`
-5. Enable notifications and choose whether to notify on first detection, recording completion, or both.
-
-Notes:
-
-- Topics on public `ntfy.sh` are effectively secret-by-name unless you reserve them, so pick something hard to guess.
-- If you self-host ntfy, put that base URL in `Server URL` instead.
-- If `Click URL` is set, tapping the phone notification can take you to the SAMECode console or recording link.
-
-## Test
-
-Browser decoder tests:
-
-```powershell
-& "C:\Users\tyler\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe" --test
-```
-
-Python backend decoder tests:
-
-```powershell
-& "C:\Users\tyler\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" -m unittest discover -s tests -p "test_*.py"
-```
-
-## Notes
-
-- The browser still handles local file decode and browser-playable URL/live-stream decode.
-- The audio-device list and device capture are now server-side, not browser-side.
-- SAME `+TTTT` is a purge/valid time, not the guaranteed voice-message length, so the recording timeout is configurable instead of derived from the header.
-- Captured alerts are persisted in [data/alerts.json](C:/Users/tyler/Desktop/SAMECODE/data/alerts.json).
+- Shows live server and monitor log output
+- Supports built-in commands like `help`, `status`, `devices`, `settings`, `alerts`, `start`, `stop`, `clear`, `open`, and `shutdown`
+- Lets you control the server monitor without opening a separate terminal

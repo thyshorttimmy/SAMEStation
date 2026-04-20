@@ -99,9 +99,45 @@
             <span>Topic</span>
             <input id="ntfy-topic" type="text" placeholder="my-private-same-topic" />
           </label>
+        </div>
+        <div class="row">
           <label class="field compact-field">
-            <span>Priority</span>
-            <select id="ntfy-priority">
+            <span>Tags</span>
+            <input id="ntfy-tags" type="text" placeholder="warning,radio" />
+          </label>
+          <label class="field compact-field">
+            <span>Detection Click URL</span>
+            <input id="ntfy-click-url-detected" type="url" placeholder="http://192.168.1.50:8000" />
+          </label>
+          <label class="field compact-field">
+            <span>Completed Click URL</span>
+            <input id="ntfy-click-url-completed" type="url" placeholder="http://192.168.1.50:8000" />
+          </label>
+        </div>
+        <div class="row">
+          <label class="field compact-field">
+            <span>Warning Urgency</span>
+            <select id="ntfy-priority-warning">
+              <option value="urgent">Urgent</option>
+              <option value="high">High</option>
+              <option value="default">Default</option>
+              <option value="low">Low</option>
+              <option value="min">Min</option>
+            </select>
+          </label>
+          <label class="field compact-field">
+            <span>Watch Urgency</span>
+            <select id="ntfy-priority-watch">
+              <option value="urgent">Urgent</option>
+              <option value="high">High</option>
+              <option value="default">Default</option>
+              <option value="low">Low</option>
+              <option value="min">Min</option>
+            </select>
+          </label>
+          <label class="field compact-field">
+            <span>Advisory Urgency</span>
+            <select id="ntfy-priority-advisory">
               <option value="urgent">Urgent</option>
               <option value="high">High</option>
               <option value="default">Default</option>
@@ -112,18 +148,34 @@
         </div>
         <div class="row">
           <label class="field compact-field">
-            <span>Tags</span>
-            <input id="ntfy-tags" type="text" placeholder="warning,radio" />
+            <span>Test Urgency</span>
+            <select id="ntfy-priority-test">
+              <option value="urgent">Urgent</option>
+              <option value="high">High</option>
+              <option value="default">Default</option>
+              <option value="low">Low</option>
+              <option value="min">Min</option>
+            </select>
           </label>
           <label class="field compact-field">
-            <span>Click URL</span>
-            <input id="ntfy-click-url" type="url" placeholder="http://192.168.1.50:8000" />
+            <span>Other Urgency</span>
+            <select id="ntfy-priority-other">
+              <option value="urgent">Urgent</option>
+              <option value="high">High</option>
+              <option value="default">Default</option>
+              <option value="low">Low</option>
+              <option value="min">Min</option>
+            </select>
           </label>
         </div>
         <div class="row">
           <label class="field checkbox-field">
             <input id="ntfy-enabled" type="checkbox" />
             <span>Enable ntfy notifications</span>
+          </label>
+          <label class="field checkbox-field">
+            <input id="ntfy-completed-direct-recording-link" type="checkbox" />
+            <span>Completed alerts open the recording directly</span>
           </label>
           <label class="field checkbox-field">
             <input id="ntfy-notify-on-detected" type="checkbox" />

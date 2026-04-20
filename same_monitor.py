@@ -48,9 +48,15 @@ class ServerAudioMonitor:
         self.ntfy_enabled = False
         self.ntfy_base_url = NTFY_DEFAULT_BASE_URL
         self.ntfy_topic = ""
-        self.ntfy_priority = NTFY_DEFAULT_PRIORITY
+        self.ntfy_priority_warning = "urgent"
+        self.ntfy_priority_watch = "high"
+        self.ntfy_priority_advisory = "default"
+        self.ntfy_priority_test = "min"
+        self.ntfy_priority_other = NTFY_DEFAULT_PRIORITY
         self.ntfy_tags = NTFY_DEFAULT_TAGS
-        self.ntfy_click_url = ""
+        self.ntfy_click_url_detected = ""
+        self.ntfy_click_url_completed = ""
+        self.ntfy_completed_direct_recording_link = True
         self.ntfy_notify_on_detected = True
         self.ntfy_notify_on_completed = False
         self.decoder = SAMEStreamDecoder({"maxWindowSeconds": 30, "minRepeats": 1})
@@ -166,9 +172,15 @@ class ServerAudioMonitor:
                 "ntfyEnabled": self.ntfy_enabled,
                 "ntfyBaseUrl": self.ntfy_base_url,
                 "ntfyTopic": self.ntfy_topic,
-                "ntfyPriority": self.ntfy_priority,
+                "ntfyPriorityWarning": self.ntfy_priority_warning,
+                "ntfyPriorityWatch": self.ntfy_priority_watch,
+                "ntfyPriorityAdvisory": self.ntfy_priority_advisory,
+                "ntfyPriorityTest": self.ntfy_priority_test,
+                "ntfyPriorityOther": self.ntfy_priority_other,
                 "ntfyTags": self.ntfy_tags,
-                "ntfyClickUrl": self.ntfy_click_url,
+                "ntfyClickUrlDetected": self.ntfy_click_url_detected,
+                "ntfyClickUrlCompleted": self.ntfy_click_url_completed,
+                "ntfyCompletedDirectRecordingLink": self.ntfy_completed_direct_recording_link,
                 "ntfyNotifyOnDetected": self.ntfy_notify_on_detected,
                 "ntfyNotifyOnCompleted": self.ntfy_notify_on_completed,
             }
@@ -183,9 +195,15 @@ class ServerAudioMonitor:
         ntfy_enabled: bool | None = None,
         ntfy_base_url: str | None = None,
         ntfy_topic: str | None = None,
-        ntfy_priority: str | None = None,
+        ntfy_priority_warning: str | None = None,
+        ntfy_priority_watch: str | None = None,
+        ntfy_priority_advisory: str | None = None,
+        ntfy_priority_test: str | None = None,
+        ntfy_priority_other: str | None = None,
         ntfy_tags: str | None = None,
-        ntfy_click_url: str | None = None,
+        ntfy_click_url_detected: str | None = None,
+        ntfy_click_url_completed: str | None = None,
+        ntfy_completed_direct_recording_link: bool | None = None,
         ntfy_notify_on_detected: bool | None = None,
         ntfy_notify_on_completed: bool | None = None,
     ) -> dict[str, Any]:
@@ -205,12 +223,24 @@ class ServerAudioMonitor:
                 self.ntfy_base_url = sanitize_base_url(ntfy_base_url) or NTFY_DEFAULT_BASE_URL
             if ntfy_topic is not None:
                 self.ntfy_topic = str(ntfy_topic).strip()
-            if ntfy_priority is not None:
-                self.ntfy_priority = sanitize_ntfy_priority(ntfy_priority)
+            if ntfy_priority_warning is not None:
+                self.ntfy_priority_warning = sanitize_ntfy_priority(ntfy_priority_warning)
+            if ntfy_priority_watch is not None:
+                self.ntfy_priority_watch = sanitize_ntfy_priority(ntfy_priority_watch)
+            if ntfy_priority_advisory is not None:
+                self.ntfy_priority_advisory = sanitize_ntfy_priority(ntfy_priority_advisory)
+            if ntfy_priority_test is not None:
+                self.ntfy_priority_test = sanitize_ntfy_priority(ntfy_priority_test)
+            if ntfy_priority_other is not None:
+                self.ntfy_priority_other = sanitize_ntfy_priority(ntfy_priority_other)
             if ntfy_tags is not None:
                 self.ntfy_tags = str(ntfy_tags).strip()
-            if ntfy_click_url is not None:
-                self.ntfy_click_url = str(ntfy_click_url).strip()
+            if ntfy_click_url_detected is not None:
+                self.ntfy_click_url_detected = str(ntfy_click_url_detected).strip()
+            if ntfy_click_url_completed is not None:
+                self.ntfy_click_url_completed = str(ntfy_click_url_completed).strip()
+            if ntfy_completed_direct_recording_link is not None:
+                self.ntfy_completed_direct_recording_link = bool(ntfy_completed_direct_recording_link)
             if ntfy_notify_on_detected is not None:
                 self.ntfy_notify_on_detected = bool(ntfy_notify_on_detected)
             if ntfy_notify_on_completed is not None:
@@ -591,9 +621,19 @@ class ServerAudioMonitor:
         self.ntfy_enabled = bool(settings.get("ntfyEnabled", self.ntfy_enabled))
         self.ntfy_base_url = sanitize_base_url(str(settings.get("ntfyBaseUrl", self.ntfy_base_url))) or NTFY_DEFAULT_BASE_URL
         self.ntfy_topic = str(settings.get("ntfyTopic", self.ntfy_topic)).strip()
-        self.ntfy_priority = sanitize_ntfy_priority(str(settings.get("ntfyPriority", self.ntfy_priority)))
+        legacy_priority = str(settings.get("ntfyPriority", self.ntfy_priority_other))
+        self.ntfy_priority_warning = sanitize_ntfy_priority(str(settings.get("ntfyPriorityWarning", self.ntfy_priority_warning)))
+        self.ntfy_priority_watch = sanitize_ntfy_priority(str(settings.get("ntfyPriorityWatch", self.ntfy_priority_watch)))
+        self.ntfy_priority_advisory = sanitize_ntfy_priority(str(settings.get("ntfyPriorityAdvisory", self.ntfy_priority_advisory)))
+        self.ntfy_priority_test = sanitize_ntfy_priority(str(settings.get("ntfyPriorityTest", self.ntfy_priority_test)))
+        self.ntfy_priority_other = sanitize_ntfy_priority(str(settings.get("ntfyPriorityOther", legacy_priority)))
         self.ntfy_tags = str(settings.get("ntfyTags", self.ntfy_tags)).strip()
-        self.ntfy_click_url = str(settings.get("ntfyClickUrl", self.ntfy_click_url)).strip()
+        legacy_click_url = str(settings.get("ntfyClickUrl", "")).strip()
+        self.ntfy_click_url_detected = str(settings.get("ntfyClickUrlDetected", legacy_click_url or self.ntfy_click_url_detected)).strip()
+        self.ntfy_click_url_completed = str(settings.get("ntfyClickUrlCompleted", legacy_click_url or self.ntfy_click_url_completed)).strip()
+        self.ntfy_completed_direct_recording_link = bool(
+            settings.get("ntfyCompletedDirectRecordingLink", self.ntfy_completed_direct_recording_link)
+        )
         self.ntfy_notify_on_detected = bool(settings.get("ntfyNotifyOnDetected", self.ntfy_notify_on_detected))
         self.ntfy_notify_on_completed = bool(settings.get("ntfyNotifyOnCompleted", self.ntfy_notify_on_completed))
         self._persist_settings()
@@ -611,9 +651,15 @@ class ServerAudioMonitor:
             "ntfyEnabled": self.ntfy_enabled,
             "ntfyBaseUrl": self.ntfy_base_url,
             "ntfyTopic": self.ntfy_topic,
-            "ntfyPriority": self.ntfy_priority,
+            "ntfyPriorityWarning": self.ntfy_priority_warning,
+            "ntfyPriorityWatch": self.ntfy_priority_watch,
+            "ntfyPriorityAdvisory": self.ntfy_priority_advisory,
+            "ntfyPriorityTest": self.ntfy_priority_test,
+            "ntfyPriorityOther": self.ntfy_priority_other,
             "ntfyTags": self.ntfy_tags,
-            "ntfyClickUrl": self.ntfy_click_url,
+            "ntfyClickUrlDetected": self.ntfy_click_url_detected,
+            "ntfyClickUrlCompleted": self.ntfy_click_url_completed,
+            "ntfyCompletedDirectRecordingLink": self.ntfy_completed_direct_recording_link,
             "ntfyNotifyOnDetected": self.ntfy_notify_on_detected,
             "ntfyNotifyOnCompleted": self.ntfy_notify_on_completed,
         }
@@ -804,12 +850,17 @@ class ServerAudioMonitor:
         message = build_ntfy_message(alert, stage)
         headers = {
             "Title": title,
-            "Priority": sanitize_ntfy_priority(self.ntfy_priority),
+            "Priority": self._priority_for_alert(alert),
         }
         tags = normalize_tag_list(self.ntfy_tags)
         if tags:
             headers["Tags"] = ",".join(tags)
-        click_url = build_ntfy_click_url(alert, self.ntfy_click_url)
+        click_url = build_ntfy_click_url(
+            alert,
+            self.ntfy_click_url_detected if stage == "detected" else self.ntfy_click_url_completed,
+            stage,
+            prefer_recording_link=self.ntfy_completed_direct_recording_link,
+        )
         if click_url:
             headers["Click"] = click_url
 
@@ -824,6 +875,18 @@ class ServerAudioMonitor:
             if int(status) >= 400:
                 raise RuntimeError(f"ntfy returned HTTP {status}")
         self._add_activity("ntfy sent", f"{title} -> {topic}")
+
+    def _priority_for_alert(self, alert: dict[str, Any]) -> str:
+        category = classify_ntfy_alert_type(alert)
+        if category == "warning":
+            return self.ntfy_priority_warning
+        if category == "watch":
+            return self.ntfy_priority_watch
+        if category == "advisory":
+            return self.ntfy_priority_advisory
+        if category == "test":
+            return self.ntfy_priority_test
+        return self.ntfy_priority_other
 
 
 def now_iso() -> str:
@@ -883,6 +946,21 @@ def normalize_tag_list(value: str) -> list[str]:
     return ordered
 
 
+def classify_ntfy_alert_type(alert: dict[str, Any]) -> str:
+    event_code = str(alert.get("eventCode") or "").upper()
+    event_label = str(alert.get("eventLabel") or "").strip().lower()
+
+    if event_code in {"RWT", "RMT", "NPT", "DMO", "EAN", "EAT"} or "test" in event_label or "demo" in event_label:
+        return "test"
+    if "warning" in event_label:
+        return "warning"
+    if "watch" in event_label:
+        return "watch"
+    if "advisory" in event_label or "statement" in event_label:
+        return "advisory"
+    return "other"
+
+
 def build_ntfy_title(alert: dict[str, Any], stage: str) -> str:
     event_label = str(alert.get("eventLabel") or "SAME Alert")
     stage_label = "Detected" if stage == "detected" else "Recording Saved"
@@ -923,13 +1001,19 @@ def format_ntfy_locations(locations: list[dict[str, Any]]) -> str:
     return "; ".join(labels)
 
 
-def build_ntfy_click_url(alert: dict[str, Any], click_base_url: str) -> str:
+def build_ntfy_click_url(
+    alert: dict[str, Any],
+    click_base_url: str,
+    stage: str,
+    *,
+    prefer_recording_link: bool,
+) -> str:
     base_url = sanitize_base_url(click_base_url)
     if not base_url:
         return ""
     recording = alert.get("recording") or {}
     recording_url = recording.get("url")
-    if recording_url:
+    if stage == "completed" and prefer_recording_link and recording_url:
         return f"{base_url}{recording_url}"
     return f"{base_url}/"
 

@@ -11,17 +11,21 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import webbrowser
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from shlex import split as shell_split
+from typing import NamedTuple
 
 from same_decoder import SAME_CODE_MAP
 from same_monitor import ServerAudioMonitor, build_live_wav_header
+from same_paths import app_root, resource_root
 
 
-ROOT_DIR = Path(__file__).resolve().parent
-WEB_DIR = ROOT_DIR / "web"
+ROOT_DIR = app_root()
+RESOURCE_DIR = resource_root()
+WEB_DIR = RESOURCE_DIR / "web"
 DEFAULT_PORT = 8000
 USER_AGENT = "SAMECode/1.0 (+https://weather.gov/)"
 FORWARDED_HEADERS = {
@@ -84,7 +88,7 @@ class SAMECodeHandler(SimpleHTTPRequestHandler):
             self._handle_rss()
             return
         if parsed.path == "/alerts.xsl":
-            self._serve_support_file(ROOT_DIR / "web" / "alerts.xsl", "text/xsl; charset=utf-8")
+            self._serve_support_file(RESOURCE_DIR / "web" / "alerts.xsl", "text/xsl; charset=utf-8")
             return
         if parsed.path.startswith("/recordings/"):
             self._serve_recording(parsed.path)
@@ -100,7 +104,7 @@ class SAMECodeHandler(SimpleHTTPRequestHandler):
             self._serve_live_monitor_audio(parsed, head_only=True)
             return
         if parsed.path == "/alerts.xsl":
-            self._serve_support_file(ROOT_DIR / "web" / "alerts.xsl", "text/xsl; charset=utf-8", head_only=True)
+            self._serve_support_file(RESOURCE_DIR / "web" / "alerts.xsl", "text/xsl; charset=utf-8", head_only=True)
             return
         if parsed.path.startswith("/recordings/"):
             self._serve_recording(parsed.path, head_only=True)
@@ -191,9 +195,15 @@ class SAMECodeHandler(SimpleHTTPRequestHandler):
             ntfy_enabled = payload.get("ntfyEnabled")
             ntfy_base_url = payload.get("ntfyBaseUrl")
             ntfy_topic = payload.get("ntfyTopic")
-            ntfy_priority = payload.get("ntfyPriority")
+            ntfy_priority_warning = payload.get("ntfyPriorityWarning")
+            ntfy_priority_watch = payload.get("ntfyPriorityWatch")
+            ntfy_priority_advisory = payload.get("ntfyPriorityAdvisory")
+            ntfy_priority_test = payload.get("ntfyPriorityTest")
+            ntfy_priority_other = payload.get("ntfyPriorityOther")
             ntfy_tags = payload.get("ntfyTags")
-            ntfy_click_url = payload.get("ntfyClickUrl")
+            ntfy_click_url_detected = payload.get("ntfyClickUrlDetected")
+            ntfy_click_url_completed = payload.get("ntfyClickUrlCompleted")
+            ntfy_completed_direct_recording_link = payload.get("ntfyCompletedDirectRecordingLink")
             ntfy_notify_on_detected = payload.get("ntfyNotifyOnDetected")
             ntfy_notify_on_completed = payload.get("ntfyNotifyOnCompleted")
             settings = MONITOR.update_settings(
@@ -204,9 +214,15 @@ class SAMECodeHandler(SimpleHTTPRequestHandler):
                 ntfy_enabled=bool(ntfy_enabled) if ntfy_enabled is not None else None,
                 ntfy_base_url=str(ntfy_base_url) if ntfy_base_url is not None else None,
                 ntfy_topic=str(ntfy_topic) if ntfy_topic is not None else None,
-                ntfy_priority=str(ntfy_priority) if ntfy_priority is not None else None,
+                ntfy_priority_warning=str(ntfy_priority_warning) if ntfy_priority_warning is not None else None,
+                ntfy_priority_watch=str(ntfy_priority_watch) if ntfy_priority_watch is not None else None,
+                ntfy_priority_advisory=str(ntfy_priority_advisory) if ntfy_priority_advisory is not None else None,
+                ntfy_priority_test=str(ntfy_priority_test) if ntfy_priority_test is not None else None,
+                ntfy_priority_other=str(ntfy_priority_other) if ntfy_priority_other is not None else None,
                 ntfy_tags=str(ntfy_tags) if ntfy_tags is not None else None,
-                ntfy_click_url=str(ntfy_click_url) if ntfy_click_url is not None else None,
+                ntfy_click_url_detected=str(ntfy_click_url_detected) if ntfy_click_url_detected is not None else None,
+                ntfy_click_url_completed=str(ntfy_click_url_completed) if ntfy_click_url_completed is not None else None,
+                ntfy_completed_direct_recording_link=bool(ntfy_completed_direct_recording_link) if ntfy_completed_direct_recording_link is not None else None,
                 ntfy_notify_on_detected=bool(ntfy_notify_on_detected) if ntfy_notify_on_detected is not None else None,
                 ntfy_notify_on_completed=bool(ntfy_notify_on_completed) if ntfy_notify_on_completed is not None else None,
             )
@@ -412,9 +428,15 @@ class SAMECodeCli:
             if not raw_command:
                 continue
 
-            should_stop = self._handle_command(raw_command)
+            should_stop = self.execute_command(raw_command)
             if should_stop:
                 return
+
+    def execute_command(self, raw_command: str) -> bool:
+        raw_command = raw_command.strip()
+        if not raw_command:
+            return False
+        return self._handle_command(raw_command)
 
     def _handle_command(self, raw_command: str) -> bool:
         try:
@@ -536,25 +558,66 @@ class SAMECodeCli:
         )
 
 
+class ServerContext(NamedTuple):
+    server: ThreadingHTTPServer
+    cli: SAMECodeCli | None
+    port: int
+
+
+def create_server_context(*, port: int = DEFAULT_PORT, enable_cli: bool = True) -> ServerContext:
+    server = ThreadingHTTPServer(("127.0.0.1", port), SAMECodeHandler)
+    resolved_port = int(server.server_port)
+    MONITOR.set_activity_callback(lambda title, detail: LOGGER.info("Monitor | %s | %s", title, detail))
+    cli = SAMECodeCli(server, MONITOR, resolved_port) if enable_cli else None
+    return ServerContext(server=server, cli=cli, port=resolved_port)
+
+
+def shutdown_server_context(context: ServerContext) -> None:
+    if context.cli is not None:
+        context.cli.stop()
+    MONITOR.stop("server_shutdown")
+    context.server.shutdown()
+    context.server.server_close()
+
+
 def main() -> None:
-    configure_logging()
     parser = argparse.ArgumentParser(description="Run the SAMECode local web server.")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Port to bind the local server on.")
+    parser.add_argument("--open-browser", action="store_true", help="Open the SAMECode web console in the default browser.")
     args = parser.parse_args()
 
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), SAMECodeHandler)
-    MONITOR.set_activity_callback(lambda title, detail: LOGGER.info("Monitor | %s | %s", title, detail))
-    cli = SAMECodeCli(server, MONITOR, args.port)
-    LOGGER.info("SAMECode listening on http://127.0.0.1:%s", args.port)
-    cli.start()
+    run_server(port=args.port, open_browser=args.open_browser)
+
+
+def run_server(*, port: int = DEFAULT_PORT, open_browser: bool = False) -> None:
+    configure_logging()
+    context = create_server_context(port=port, enable_cli=True)
+    LOGGER.info("SAMECode listening on http://127.0.0.1:%s", context.port)
+    if context.cli is not None:
+        context.cli.start()
+    if open_browser:
+        threading.Thread(
+            target=lambda: _open_browser(f"http://127.0.0.1:{context.port}"),
+            name="samecode-browser",
+            daemon=True,
+        ).start()
     try:
-        server.serve_forever()
+        context.server.serve_forever()
     except KeyboardInterrupt:
         LOGGER.info("Shutting down.")
     finally:
-        cli.stop()
+        if context.cli is not None:
+            context.cli.stop()
         MONITOR.stop("server_shutdown")
-        server.server_close()
+        context.server.server_close()
+
+
+def _open_browser(url: str) -> None:
+    time.sleep(1.0)
+    try:
+        webbrowser.open(url, new=1)
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("Unable to open browser automatically: %s", exc)
 
 
 if __name__ == "__main__":

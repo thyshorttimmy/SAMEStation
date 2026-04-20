@@ -10,6 +10,7 @@ from typing import Any
 import json
 
 import numpy as np
+from same_paths import resource_root
 
 
 TARGET_SAMPLE_RATE = 12_500
@@ -159,7 +160,7 @@ EVENTS = {
     "WSW": "Winter storm warning",
 }
 
-ROOT_DIR = Path(__file__).resolve().parent
+ROOT_DIR = resource_root()
 SAME_CODES_PATH = ROOT_DIR / "data" / "same_codes.json"
 if SAME_CODES_PATH.exists():
     SAME_CODE_MAP = json.loads(SAME_CODES_PATH.read_text(encoding="utf-8"))

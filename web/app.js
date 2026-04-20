@@ -50,9 +50,15 @@ const elements = {
   ntfyEnabled: document.querySelector("#ntfy-enabled"),
   ntfyBaseUrl: document.querySelector("#ntfy-base-url"),
   ntfyTopic: document.querySelector("#ntfy-topic"),
-  ntfyPriority: document.querySelector("#ntfy-priority"),
+  ntfyPriorityWarning: document.querySelector("#ntfy-priority-warning"),
+  ntfyPriorityWatch: document.querySelector("#ntfy-priority-watch"),
+  ntfyPriorityAdvisory: document.querySelector("#ntfy-priority-advisory"),
+  ntfyPriorityTest: document.querySelector("#ntfy-priority-test"),
+  ntfyPriorityOther: document.querySelector("#ntfy-priority-other"),
   ntfyTags: document.querySelector("#ntfy-tags"),
-  ntfyClickUrl: document.querySelector("#ntfy-click-url"),
+  ntfyClickUrlDetected: document.querySelector("#ntfy-click-url-detected"),
+  ntfyClickUrlCompleted: document.querySelector("#ntfy-click-url-completed"),
+  ntfyCompletedDirectRecordingLink: document.querySelector("#ntfy-completed-direct-recording-link"),
   ntfyNotifyOnDetected: document.querySelector("#ntfy-notify-on-detected"),
   ntfyNotifyOnCompleted: document.querySelector("#ntfy-notify-on-completed"),
   monitorCopy: document.querySelector("#monitor-copy"),
@@ -82,9 +88,15 @@ async function boot() {
   elements.ntfyEnabled.addEventListener("change", persistServerSettings);
   elements.ntfyBaseUrl.addEventListener("change", persistServerSettings);
   elements.ntfyTopic.addEventListener("change", persistServerSettings);
-  elements.ntfyPriority.addEventListener("change", persistServerSettings);
+  elements.ntfyPriorityWarning.addEventListener("change", persistServerSettings);
+  elements.ntfyPriorityWatch.addEventListener("change", persistServerSettings);
+  elements.ntfyPriorityAdvisory.addEventListener("change", persistServerSettings);
+  elements.ntfyPriorityTest.addEventListener("change", persistServerSettings);
+  elements.ntfyPriorityOther.addEventListener("change", persistServerSettings);
   elements.ntfyTags.addEventListener("change", persistServerSettings);
-  elements.ntfyClickUrl.addEventListener("change", persistServerSettings);
+  elements.ntfyClickUrlDetected.addEventListener("change", persistServerSettings);
+  elements.ntfyClickUrlCompleted.addEventListener("change", persistServerSettings);
+  elements.ntfyCompletedDirectRecordingLink.addEventListener("change", persistServerSettings);
   elements.ntfyNotifyOnDetected.addEventListener("change", persistServerSettings);
   elements.ntfyNotifyOnCompleted.addEventListener("change", persistServerSettings);
 
@@ -447,9 +459,15 @@ async function persistServerSettings(silent = true) {
         ntfyEnabled: elements.ntfyEnabled.checked,
         ntfyBaseUrl: elements.ntfyBaseUrl.value.trim(),
         ntfyTopic: elements.ntfyTopic.value.trim(),
-        ntfyPriority: elements.ntfyPriority.value,
+        ntfyPriorityWarning: elements.ntfyPriorityWarning.value,
+        ntfyPriorityWatch: elements.ntfyPriorityWatch.value,
+        ntfyPriorityAdvisory: elements.ntfyPriorityAdvisory.value,
+        ntfyPriorityTest: elements.ntfyPriorityTest.value,
+        ntfyPriorityOther: elements.ntfyPriorityOther.value,
         ntfyTags: elements.ntfyTags.value.trim(),
-        ntfyClickUrl: elements.ntfyClickUrl.value.trim(),
+        ntfyClickUrlDetected: elements.ntfyClickUrlDetected.value.trim(),
+        ntfyClickUrlCompleted: elements.ntfyClickUrlCompleted.value.trim(),
+        ntfyCompletedDirectRecordingLink: elements.ntfyCompletedDirectRecordingLink.checked,
         ntfyNotifyOnDetected: elements.ntfyNotifyOnDetected.checked,
         ntfyNotifyOnCompleted: elements.ntfyNotifyOnCompleted.checked,
       }),
@@ -642,14 +660,32 @@ function applyServerSettings(settings) {
   if (settings.ntfyTopic != null) {
     elements.ntfyTopic.value = String(settings.ntfyTopic);
   }
-  if (settings.ntfyPriority != null) {
-    elements.ntfyPriority.value = String(settings.ntfyPriority);
+  if (settings.ntfyPriorityWarning != null) {
+    elements.ntfyPriorityWarning.value = String(settings.ntfyPriorityWarning);
+  }
+  if (settings.ntfyPriorityWatch != null) {
+    elements.ntfyPriorityWatch.value = String(settings.ntfyPriorityWatch);
+  }
+  if (settings.ntfyPriorityAdvisory != null) {
+    elements.ntfyPriorityAdvisory.value = String(settings.ntfyPriorityAdvisory);
+  }
+  if (settings.ntfyPriorityTest != null) {
+    elements.ntfyPriorityTest.value = String(settings.ntfyPriorityTest);
+  }
+  if (settings.ntfyPriorityOther != null) {
+    elements.ntfyPriorityOther.value = String(settings.ntfyPriorityOther);
   }
   if (settings.ntfyTags != null) {
     elements.ntfyTags.value = String(settings.ntfyTags);
   }
-  if (settings.ntfyClickUrl != null) {
-    elements.ntfyClickUrl.value = String(settings.ntfyClickUrl);
+  if (settings.ntfyClickUrlDetected != null) {
+    elements.ntfyClickUrlDetected.value = String(settings.ntfyClickUrlDetected);
+  }
+  if (settings.ntfyClickUrlCompleted != null) {
+    elements.ntfyClickUrlCompleted.value = String(settings.ntfyClickUrlCompleted);
+  }
+  if (settings.ntfyCompletedDirectRecordingLink != null) {
+    elements.ntfyCompletedDirectRecordingLink.checked = Boolean(settings.ntfyCompletedDirectRecordingLink);
   }
   if (settings.ntfyNotifyOnDetected != null) {
     elements.ntfyNotifyOnDetected.checked = Boolean(settings.ntfyNotifyOnDetected);
