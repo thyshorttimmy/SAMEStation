@@ -2,6 +2,12 @@
 
 SAMECode is a local NOAA Weather Radio `S.A.M.E.` decoder and alert capture app.
 
+## Important Disclaimer
+
+This entire project is AI-generated with Codex GPT-5.4.
+
+SAMECode is not meant to be relied on as an actual life-safety alerting program. Use a real NOAA Weather Radio and other official alerting sources for actual emergency warning coverage.
+
 ## What The App Does
 
 - Decodes `S.A.M.E.` headers from local audio files
