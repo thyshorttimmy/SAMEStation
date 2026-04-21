@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import mimetypes
+import socket
 import shutil
 import sys
 import threading
@@ -27,6 +28,7 @@ ROOT_DIR = app_root()
 RESOURCE_DIR = resource_root()
 WEB_DIR = RESOURCE_DIR / "web"
 DEFAULT_PORT = 8000
+DEFAULT_BIND_HOST = "0.0.0.0"
 USER_AGENT = "SAMECode/1.0 (+https://weather.gov/)"
 FORWARDED_HEADERS = {
     "accept-ranges",
@@ -601,7 +603,8 @@ class SAMECodeCli:
                 self.monitor.clear_alerts()
                 return False
             if command in {"open", "url"}:
-                LOGGER.info("Console: http://127.0.0.1:%s", self.port)
+                for url in build_access_urls(self.port):
+                    LOGGER.info("Console: %s", url)
                 return False
             if command in {"quit", "exit", "shutdown"}:
                 LOGGER.info("Shutting down SAMECode from CLI command.")
@@ -689,14 +692,15 @@ class ServerContext(NamedTuple):
     server: ThreadingHTTPServer
     cli: SAMECodeCli | None
     port: int
+    bind_host: str
 
 
-def create_server_context(*, port: int = DEFAULT_PORT, enable_cli: bool = True) -> ServerContext:
-    server = ThreadingHTTPServer(("127.0.0.1", port), SAMECodeHandler)
+def create_server_context(*, port: int = DEFAULT_PORT, bind_host: str = DEFAULT_BIND_HOST, enable_cli: bool = True) -> ServerContext:
+    server = ThreadingHTTPServer((bind_host, port), SAMECodeHandler)
     resolved_port = int(server.server_port)
     MONITOR.set_activity_callback(lambda title, detail: LOGGER.info("Monitor | %s | %s", title, detail))
     cli = SAMECodeCli(server, MONITOR, resolved_port) if enable_cli else None
-    return ServerContext(server=server, cli=cli, port=resolved_port)
+    return ServerContext(server=server, cli=cli, port=resolved_port, bind_host=bind_host)
 
 
 def shutdown_server_context(context: ServerContext) -> None:
@@ -710,16 +714,18 @@ def shutdown_server_context(context: ServerContext) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the SAMECode local web server.")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Port to bind the local server on.")
+    parser.add_argument("--bind", default=DEFAULT_BIND_HOST, help="Host or interface to bind the server on. Use 0.0.0.0 for LAN access.")
     parser.add_argument("--open-browser", action="store_true", help="Open the SAMECode web console in the default browser.")
     args = parser.parse_args()
 
-    run_server(port=args.port, open_browser=args.open_browser)
+    run_server(port=args.port, bind_host=args.bind, open_browser=args.open_browser)
 
 
-def run_server(*, port: int = DEFAULT_PORT, open_browser: bool = False) -> None:
+def run_server(*, port: int = DEFAULT_PORT, bind_host: str = DEFAULT_BIND_HOST, open_browser: bool = False) -> None:
     configure_logging()
-    context = create_server_context(port=port, enable_cli=True)
-    LOGGER.info("SAMECode listening on http://127.0.0.1:%s", context.port)
+    context = create_server_context(port=port, bind_host=bind_host, enable_cli=True)
+    for url in build_access_urls(context.port):
+        LOGGER.info("SAMECode listening on %s", url)
     if context.cli is not None:
         context.cli.start()
     if open_browser:
@@ -745,6 +751,26 @@ def _open_browser(url: str) -> None:
         webbrowser.open(url, new=1)
     except Exception as exc:  # noqa: BLE001
         LOGGER.warning("Unable to open browser automatically: %s", exc)
+
+
+def build_access_urls(port: int) -> list[str]:
+    urls = [f"http://127.0.0.1:{port}"]
+    seen = {"127.0.0.1"}
+    try:
+        hostname = socket.gethostname()
+        infos = socket.getaddrinfo(hostname, None, family=socket.AF_INET, type=socket.SOCK_STREAM)
+    except Exception:
+        infos = []
+
+    for info in infos:
+        address = str(info[4][0]).strip()
+        if not address or address in seen:
+            continue
+        if address.startswith("127.") or address.startswith("169.254."):
+            continue
+        seen.add(address)
+        urls.append(f"http://{address}:{port}")
+    return urls
 
 
 if __name__ == "__main__":
