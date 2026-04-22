@@ -2,11 +2,14 @@
 
 SAMEStation is a local NOAA Weather Radio `S.A.M.E.` decoder and alert capture app.
 
-## Important Disclaimer
-
 This entire project is AI-generated with Codex GPT-5.4.
 
-SAMEStation is not meant to be relied on as an actual life-safety alerting program. Use a real NOAA Weather Radio and other official alerting sources for actual emergency warning coverage.
+## ⚠️ Disclaimer
+
+SAMEStation is provided as-is for monitoring and experimentation purposes. It is not a certified alerting device and should not be relied on for emergency notifications.
+Always use an official NOAA weather radio or other trusted alerting system for safety-critical alerts.
+
+The author assumes no responsibility for any damages or missed alerts resulting from use of this software.
 
 ## What The App Does
 
