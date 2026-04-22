@@ -29,7 +29,7 @@ RESOURCE_DIR = resource_root()
 WEB_DIR = RESOURCE_DIR / "web"
 DEFAULT_PORT = 8000
 DEFAULT_BIND_HOST = "0.0.0.0"
-USER_AGENT = "SAMECode/1.0 (+https://weather.gov/)"
+USER_AGENT = "SAMEStation/1.0 (+https://weather.gov/)"
 FORWARDED_HEADERS = {
     "accept-ranges",
     "content-length",
@@ -42,7 +42,7 @@ FORWARDED_HEADERS = {
     "icy-name",
 }
 MONITOR = ServerAudioMonitor(ROOT_DIR)
-LOGGER = logging.getLogger("samecode")
+LOGGER = logging.getLogger("samestation")
 YOUTUBE_HOSTS = {
     "youtube.com",
     "www.youtube.com",
@@ -62,7 +62,7 @@ def configure_logging() -> None:
     )
 
 
-class SAMECodeHandler(SimpleHTTPRequestHandler):
+class SAMEStationHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(WEB_DIR), **kwargs)
 
@@ -185,10 +185,18 @@ class SAMECodeHandler(SimpleHTTPRequestHandler):
     def _handle_monitor_start(self) -> None:
         try:
             payload = self._read_json_body()
-            device_id = int(payload.get("deviceId", -1))
+            device_id = payload.get("deviceId")
+            source_mode = str(payload.get("sourceMode", "device"))
+            icecast_url = payload.get("icecastUrl")
             pre_roll_seconds = int(payload.get("preRollSeconds", 10))
             max_record_seconds = int(payload.get("maxRecordSeconds", 180))
-            MONITOR.start(device_id, pre_roll_seconds=pre_roll_seconds, max_record_seconds=max_record_seconds)
+            MONITOR.start(
+                int(device_id) if device_id is not None and str(device_id).strip() != "" else None,
+                pre_roll_seconds=pre_roll_seconds,
+                max_record_seconds=max_record_seconds,
+                source_mode=source_mode,
+                icecast_url=str(icecast_url) if icecast_url is not None else None,
+            )
             self._send_json({"ok": True, "monitor": MONITOR.get_status()})
         except (ValueError, json.JSONDecodeError) as exc:
             self.send_error_json(HTTPStatus.BAD_REQUEST, f"Invalid monitor request: {exc}")
@@ -202,6 +210,8 @@ class SAMECodeHandler(SimpleHTTPRequestHandler):
     def _handle_settings_update(self) -> None:
         try:
             payload = self._read_json_body()
+            source_mode = payload.get("sourceMode")
+            icecast_url = payload.get("icecastUrl")
             device_id = payload.get("deviceId")
             pre_roll_seconds = payload.get("preRollSeconds")
             max_record_seconds = payload.get("maxRecordSeconds")
@@ -221,6 +231,8 @@ class SAMECodeHandler(SimpleHTTPRequestHandler):
             ntfy_notify_on_detected = payload.get("ntfyNotifyOnDetected")
             ntfy_notify_on_completed = payload.get("ntfyNotifyOnCompleted")
             settings = MONITOR.update_settings(
+                source_mode=str(source_mode) if source_mode is not None else None,
+                icecast_url=str(icecast_url) if icecast_url is not None else None,
                 device_id=int(device_id) if device_id is not None else None,
                 pre_roll_seconds=int(pre_roll_seconds) if pre_roll_seconds is not None else None,
                 max_record_seconds=int(max_record_seconds) if max_record_seconds is not None else None,
@@ -524,7 +536,7 @@ def guess_content_type_hint(extension: str) -> str | None:
     return None
 
 
-class SAMECodeCli:
+class SAMEStationCli:
     def __init__(self, server: ThreadingHTTPServer, monitor: ServerAudioMonitor, port: int) -> None:
         self.server = server
         self.monitor = monitor
@@ -536,7 +548,7 @@ class SAMECodeCli:
         if sys.stdin is None or sys.stdin.closed:
             LOGGER.info("CLI disabled because stdin is unavailable.")
             return
-        self.thread = threading.Thread(target=self._run, name="samecode-cli", daemon=True)
+        self.thread = threading.Thread(target=self._run, name="samestation-cli", daemon=True)
         self.thread.start()
         LOGGER.info("CLI ready. Type 'help' for commands.")
 
@@ -546,7 +558,7 @@ class SAMECodeCli:
     def _run(self) -> None:
         while not self.stop_event.is_set():
             try:
-                raw_command = input("samecode> ").strip()
+                raw_command = input("samestation> ").strip()
             except EOFError:
                 LOGGER.info("CLI stdin closed.")
                 return
@@ -607,9 +619,9 @@ class SAMECodeCli:
                     LOGGER.info("Console: %s", url)
                 return False
             if command in {"quit", "exit", "shutdown"}:
-                LOGGER.info("Shutting down SAMECode from CLI command.")
+                LOGGER.info("Shutting down SAMEStation from CLI command.")
                 self.stop_event.set()
-                threading.Thread(target=self.server.shutdown, name="samecode-shutdown", daemon=True).start()
+                threading.Thread(target=self.server.shutdown, name="samestation-shutdown", daemon=True).start()
                 return True
             LOGGER.warning("Unknown command '%s'. Type 'help' for commands.", command)
             return False
@@ -690,16 +702,16 @@ class SAMECodeCli:
 
 class ServerContext(NamedTuple):
     server: ThreadingHTTPServer
-    cli: SAMECodeCli | None
+    cli: SAMEStationCli | None
     port: int
     bind_host: str
 
 
 def create_server_context(*, port: int = DEFAULT_PORT, bind_host: str = DEFAULT_BIND_HOST, enable_cli: bool = True) -> ServerContext:
-    server = ThreadingHTTPServer((bind_host, port), SAMECodeHandler)
+    server = ThreadingHTTPServer((bind_host, port), SAMEStationHandler)
     resolved_port = int(server.server_port)
     MONITOR.set_activity_callback(lambda title, detail: LOGGER.info("Monitor | %s | %s", title, detail))
-    cli = SAMECodeCli(server, MONITOR, resolved_port) if enable_cli else None
+    cli = SAMEStationCli(server, MONITOR, resolved_port) if enable_cli else None
     return ServerContext(server=server, cli=cli, port=resolved_port, bind_host=bind_host)
 
 
@@ -712,10 +724,10 @@ def shutdown_server_context(context: ServerContext) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the SAMECode local web server.")
+    parser = argparse.ArgumentParser(description="Run the SAMEStation local web server.")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Port to bind the local server on.")
     parser.add_argument("--bind", default=DEFAULT_BIND_HOST, help="Host or interface to bind the server on. Use 0.0.0.0 for LAN access.")
-    parser.add_argument("--open-browser", action="store_true", help="Open the SAMECode web console in the default browser.")
+    parser.add_argument("--open-browser", action="store_true", help="Open the SAMEStation web console in the default browser.")
     args = parser.parse_args()
 
     run_server(port=args.port, bind_host=args.bind, open_browser=args.open_browser)
@@ -725,13 +737,13 @@ def run_server(*, port: int = DEFAULT_PORT, bind_host: str = DEFAULT_BIND_HOST, 
     configure_logging()
     context = create_server_context(port=port, bind_host=bind_host, enable_cli=True)
     for url in build_access_urls(context.port):
-        LOGGER.info("SAMECode listening on %s", url)
+        LOGGER.info("SAMEStation listening on %s", url)
     if context.cli is not None:
         context.cli.start()
     if open_browser:
         threading.Thread(
             target=lambda: _open_browser(f"http://127.0.0.1:{context.port}"),
-            name="samecode-browser",
+            name="samestation-browser",
             daemon=True,
         ).start()
     try:

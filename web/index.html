@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>SAMECode</title>
+    <title>SAMEStation</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
@@ -11,7 +11,7 @@
       <section class="hero">
         <div>
           <p class="eyebrow">NOAA / NWS S.A.M.E. Decoder</p>
-          <h1>SAMECode</h1>
+          <h1>SAMEStation</h1>
           <p class="lede">
             Decode SAME headers from local files, remote audio, live streams, and a server-side always-on audio device monitor with saved recordings and RSS output.
           </p>
@@ -58,11 +58,25 @@
         </article>
 
         <article class="panel">
-          <h2>Server Audio Device</h2>
+          <h2>Server Monitor</h2>
           <p class="panel-copy">Runs at the server level for continuous monitoring, recording 10 seconds before a detected header and stopping at EOM or your timeout.</p>
-          <div class="row">
+          <label class="field">
+            <span>Source</span>
+            <select id="monitor-source-mode">
+              <option value="device">Audio Device</option>
+              <option value="icecast">Icecast Stream</option>
+            </select>
+          </label>
+          <div id="device-source-fields" class="row">
             <select id="device-select"></select>
             <button id="refresh-devices-button">Refresh</button>
+          </div>
+          <label id="icecast-source-field" class="field">
+            <span>Icecast Stream URL</span>
+            <input id="icecast-url" type="url" placeholder="https://example.com/live.mp3" />
+          </label>
+          <div id="icecast-helper" class="field-note">
+            Use a direct Icecast or Shoutcast audio stream URL for always-on server-side monitoring.
           </div>
           <div class="row">
             <label class="field compact-field">

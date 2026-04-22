@@ -7,7 +7,7 @@
       <head>
         <meta charset="utf-8"/>
         <meta name="viewport" content="width=device-width, initial-scale=1"/>
-        <title>SAMECode Alert Feed</title>
+        <title>SAMEStation Alert Feed</title>
         <style>
           :root {
             --bg: #08131f;
@@ -152,7 +152,7 @@
       <body>
         <main class="shell">
           <section class="topbar">
-            <a href="{rss/channel/link}">Open SAMECode Console</a>
+            <a href="{rss/channel/link}">Open SAMEStation Console</a>
           </section>
 
           <section class="feed">

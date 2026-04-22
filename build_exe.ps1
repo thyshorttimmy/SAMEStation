@@ -9,9 +9,9 @@ if (-not (Test-Path $python)) {
     throw "Bundled Python runtime not found at $python"
 }
 
-Get-Process SAMECode -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-if (Test-Path ".\dist\SAMECode.exe") {
-    Remove-Item ".\dist\SAMECode.exe" -Force -ErrorAction SilentlyContinue
+Get-Process SAMEStation -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+if (Test-Path ".\dist\SAMEStation.exe") {
+    Remove-Item ".\dist\SAMEStation.exe" -Force -ErrorAction SilentlyContinue
 }
 
 & $python -m pip install -r requirements.txt -r requirements-build.txt
@@ -20,8 +20,9 @@ $buildArgs = @(
     "-m", "PyInstaller",
     "--noconfirm",
     "--clean",
-    "--name", "SAMECode",
+    "--name", "SAMEStation",
     "--windowed",
+    "--collect-all", "imageio_ffmpeg",
     "--add-data", "web;web",
     "--add-data", "data\same_codes.json;data"
 )
@@ -33,15 +34,15 @@ else {
     $buildArgs += "--onedir"
 }
 
-$buildArgs += "samecode_launcher.py"
+$buildArgs += "samestation_launcher.py"
 
 & $python @buildArgs
 
 Write-Host ""
 Write-Host "Build complete."
 if ($OneFile) {
-    Write-Host "EXE: dist\SAMECode.exe"
+    Write-Host "EXE: dist\SAMEStation.exe"
 }
 else {
-    Write-Host "Folder: dist\SAMECode\"
+    Write-Host "Folder: dist\SAMEStation\"
 }

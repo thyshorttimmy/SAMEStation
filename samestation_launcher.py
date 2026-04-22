@@ -16,7 +16,7 @@ from typing import Literal
 from same_paths import app_root
 
 
-WINDOW_TITLE = "SAMECode"
+WINDOW_TITLE = "SAMEStation"
 CLIENT_WIDTH = 1360
 CLIENT_HEIGHT = 920
 CONSOLE_WIDTH = 900
@@ -25,7 +25,7 @@ DEFAULT_PORT = 8000
 DEFAULT_SERVER_URL = f"http://127.0.0.1:{DEFAULT_PORT}"
 LOG_FORMAT = "%(asctime)s | %(levelname)s | %(message)s"
 LAUNCHER_SETTINGS_PATH = app_root() / "data" / "launcher-settings.json"
-AUTO_START_TASK_NAME = "SAMECode Auto Start"
+AUTO_START_TASK_NAME = "SAMEStation Auto Start"
 ModeName = Literal["server", "client", "both"]
 DependencySpec = tuple[str, str, str, set[ModeName]]
 RUNTIME_DEPENDENCIES: tuple[DependencySpec, ...] = (
@@ -33,6 +33,7 @@ RUNTIME_DEPENDENCIES: tuple[DependencySpec, ...] = (
     ("numpy", "numpy", "numpy", {"server", "both"}),
     ("sounddevice", "sounddevice", "sounddevice", {"server", "both"}),
     ("yt_dlp", "yt-dlp", "yt-dlp", {"server", "both"}),
+    ("imageio_ffmpeg", "imageio-ffmpeg", "imageio-ffmpeg", {"server", "both"}),
 )
 
 CONSOLE_HTML = """
@@ -40,7 +41,7 @@ CONSOLE_HTML = """
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>SAMECode Server Console</title>
+    <title>SAMEStation Server Console</title>
     <style>
       :root {
         color-scheme: dark;
@@ -145,13 +146,13 @@ CONSOLE_HTML = """
   <body>
     <div class="layout">
       <div class="topbar">
-        <div class="title">SAMECode Server Console</div>
+        <div class="title">SAMEStation Server Console</div>
         <div class="subtitle" id="summary">Loading server details...</div>
       </div>
       <div class="console">
         <pre id="log"></pre>
         <form id="command-form">
-          <div class="prompt">samecode&gt;</div>
+          <div class="prompt">samestation&gt;</div>
           <input id="command" type="text" autocomplete="off" spellcheck="false" />
           <button type="submit">Run</button>
         </form>
@@ -238,7 +239,7 @@ class BufferedLogHandler(logging.Handler):
 
 
 class ServerConsoleApi:
-    def __init__(self, cli: SAMECodeCli, log_handler: BufferedLogHandler, summary: str, on_shutdown_requested) -> None:
+    def __init__(self, cli: SAMEStationCli, log_handler: BufferedLogHandler, summary: str, on_shutdown_requested) -> None:
         self.cli = cli
         self.log_handler = log_handler
         self.summary = summary
@@ -253,7 +254,7 @@ class ServerConsoleApi:
     def submit_command(self, raw_command: str) -> dict[str, object]:
         should_stop = self.cli.execute_command(raw_command)
         if should_stop:
-            threading.Thread(target=self.on_shutdown_requested, name="samecode-ui-shutdown", daemon=True).start()
+            threading.Thread(target=self.on_shutdown_requested, name="samestation-ui-shutdown", daemon=True).start()
         return {"ok": True}
 
 
@@ -270,7 +271,7 @@ class DesktopRuntime:
         self._shutdown_started = False
         self._webview = None
         self._monitor = None
-        self._samecode_cli_cls = None
+        self._samestation_cli_cls = None
         self._configure_logging = None
         self._create_server_context = None
         self._shutdown_server_context = None
@@ -303,11 +304,11 @@ class DesktopRuntime:
             return
         import webview as webview_module
 
-        from app import MONITOR, SAMECodeCli, configure_logging, create_server_context, shutdown_server_context
+        from app import MONITOR, SAMEStationCli, configure_logging, create_server_context, shutdown_server_context
 
         self._webview = webview_module
         self._monitor = MONITOR
-        self._samecode_cli_cls = SAMECodeCli
+        self._samestation_cli_cls = SAMEStationCli
         self._configure_logging = configure_logging
         self._create_server_context = create_server_context
         self._shutdown_server_context = shutdown_server_context
@@ -316,11 +317,11 @@ class DesktopRuntime:
         self.context = self._create_server_context(port=self.selection.port, enable_cli=False)
         self.server_thread = threading.Thread(
             target=self.context.server.serve_forever,
-            name="samecode-http",
+            name="samestation-http",
             daemon=True,
         )
         self.server_thread.start()
-        logging.getLogger("samecode").info("SAMECode listening on %s", self.local_server_url)
+        logging.getLogger("samestation").info("SAMEStation listening on %s", self.local_server_url)
 
     def _auto_start_server_monitor(self) -> None:
         settings = self._monitor.get_settings()
@@ -347,7 +348,7 @@ class DesktopRuntime:
             pre_roll_seconds=int(pre_roll_seconds),
             max_record_seconds=int(max_record_seconds),
         )
-        logging.getLogger("samecode").info(
+        logging.getLogger("samestation").info(
             "Auto-started monitor on device=%s preRoll=%s maxRecord=%s",
             device_id,
             pre_roll_seconds,
@@ -359,7 +360,7 @@ class DesktopRuntime:
             raise RuntimeError("Server context missing.")
         self.log_handler = BufferedLogHandler()
         logging.getLogger().addHandler(self.log_handler)
-        self.console_cli = self._samecode_cli_cls(self.context.server, self._monitor, self.context.port)
+        self.console_cli = self._samestation_cli_cls(self.context.server, self._monitor, self.context.port)
         self.console_cli.execute_command("help")
         summary = f"Local server ready at {self.local_server_url}. Close this window or run shutdown to stop the server."
         api = ServerConsoleApi(self.console_cli, self.log_handler, summary, self.shutdown)
@@ -623,7 +624,7 @@ def choose_launch_selection(default_selection: LaunchSelection) -> LaunchSelecti
     }
 
     root = tk.Tk()
-    root.title("Launch SAMECode")
+    root.title("Launch SAMEStation")
     root.geometry("680x720")
     root.minsize(640, 680)
     root.configure(bg="#f4f1e8")
@@ -638,10 +639,10 @@ def choose_launch_selection(default_selection: LaunchSelection) -> LaunchSelecti
     except Exception:
         pass
 
-    ttk.Label(outer, text="Launch SAMECode", font=("Segoe UI", 18, "bold")).pack(anchor="w")
+    ttk.Label(outer, text="Launch SAMEStation", font=("Segoe UI", 18, "bold")).pack(anchor="w")
     ttk.Label(
         outer,
-        text="Pick whether this copy should act as the local server, a client against another SAMECode server, or both at once.",
+        text="Pick whether this copy should act as the local server, a client against another SAMEStation server, or both at once.",
         wraplength=500,
     ).pack(anchor="w", pady=(8, 16))
 
@@ -653,9 +654,9 @@ def choose_launch_selection(default_selection: LaunchSelection) -> LaunchSelecti
     dependency_var = tk.StringVar(value="")
 
     options = [
-        ("server", "Server", "Run the local SAMECode server and show the server console window only."),
-        ("client", "Client", "Open the desktop web app against an existing SAMECode server URL."),
-        ("both", "Both", "Run the local server, show the server console, and open the SAMECode client window."),
+        ("server", "Server", "Run the local SAMEStation server and show the server console window only."),
+        ("client", "Client", "Open the desktop web app against an existing SAMEStation server URL."),
+        ("both", "Both", "Run the local server, show the server console, and open the SAMEStation client window."),
     ]
 
     cards = ttk.Frame(outer)
@@ -682,7 +683,7 @@ def choose_launch_selection(default_selection: LaunchSelection) -> LaunchSelecti
     ).pack(anchor="w")
     ttk.Checkbutton(
         extras,
-        text="Start SAMECode automatically when you sign in",
+        text="Start SAMEStation automatically when you sign in",
         variable=auto_start_with_windows_var,
     ).pack(anchor="w", pady=(8, 0))
 
@@ -775,7 +776,7 @@ def choose_launch_selection(default_selection: LaunchSelection) -> LaunchSelecti
     ).pack(side="right")
     tk.Button(
         actions,
-        text="Start SAMECode",
+        text="Start SAMEStation",
         command=launch,
         width=18,
         padx=10,
@@ -859,10 +860,10 @@ def build_selection(args: argparse.Namespace) -> LaunchSelection | None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Launch the SAMECode desktop app.")
+    parser = argparse.ArgumentParser(description="Launch the SAMEStation desktop app.")
     mode_group = parser.add_mutually_exclusive_group()
-    mode_group.add_argument("--server", action="store_true", help="Launch the local SAMECode server and server console only.")
-    mode_group.add_argument("--client", action="store_true", help="Launch the SAMECode client window against an existing server URL.")
+    mode_group.add_argument("--server", action="store_true", help="Launch the local SAMEStation server and server console only.")
+    mode_group.add_argument("--client", action="store_true", help="Launch the SAMEStation client window against an existing server URL.")
     mode_group.add_argument("--both", action="store_true", help="Launch the local server, server console, and client window together.")
     parser.add_argument("--mode", choices=("server", "client", "both"), help="Legacy launch mode option. If omitted and no launch flag is provided, show the mode chooser.")
     parser.add_argument("--server-url", default=DEFAULT_SERVER_URL, help="Server URL for client mode.")

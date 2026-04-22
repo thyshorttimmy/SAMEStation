@@ -35,7 +35,11 @@ const elements = {
   decodeUrlButton: document.querySelector("#decode-url-button"),
   startStreamButton: document.querySelector("#start-stream-button"),
   stopStreamButton: document.querySelector("#stop-stream-button"),
+  monitorSourceMode: document.querySelector("#monitor-source-mode"),
+  deviceSourceFields: document.querySelector("#device-source-fields"),
   deviceSelect: document.querySelector("#device-select"),
+  icecastSourceField: document.querySelector("#icecast-source-field"),
+  icecastUrl: document.querySelector("#icecast-url"),
   preRollSeconds: document.querySelector("#pre-roll-seconds"),
   maxRecordSeconds: document.querySelector("#max-record-seconds"),
   refreshDevicesButton: document.querySelector("#refresh-devices-button"),
@@ -76,13 +80,16 @@ async function boot() {
   elements.decodeUrlButton.addEventListener("click", handleDecodeUrlFile);
   elements.startStreamButton.addEventListener("click", handleStartStream);
   elements.stopStreamButton.addEventListener("click", stopBrowserStreamCapture);
+  elements.monitorSourceMode.addEventListener("change", handleMonitorSourceModeChange);
   elements.refreshDevicesButton.addEventListener("click", handleRefreshDevices);
   elements.startDeviceButton.addEventListener("click", handleStartServerMonitor);
   elements.stopDeviceButton.addEventListener("click", handleStopServerMonitor);
   elements.startLiveMonitorButton.addEventListener("click", handleStartServerLiveAudio);
   elements.stopLiveMonitorButton.addEventListener("click", handleStopServerLiveAudio);
   elements.clearResultsButton.addEventListener("click", handleClearAlerts);
+  elements.monitorSourceMode.addEventListener("change", persistServerSettings);
   elements.deviceSelect.addEventListener("change", persistServerSettings);
+  elements.icecastUrl.addEventListener("change", persistServerSettings);
   elements.preRollSeconds.addEventListener("change", persistServerSettings);
   elements.maxRecordSeconds.addEventListener("change", persistServerSettings);
   elements.autoLivePlaybackOnAlert.addEventListener("change", persistServerSettings);
@@ -266,13 +273,16 @@ async function handleRefreshDevices(silent = false) {
 
 async function handleStartServerMonitor() {
   try {
-    const deviceId = Number(elements.deviceSelect.value);
+    const sourceMode = currentMonitorSourceMode();
+    const deviceId = sourceMode === "device" ? Number(elements.deviceSelect.value) : null;
     await persistServerSettings(true);
     const response = await fetch("/api/monitor/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        sourceMode,
         deviceId,
+        icecastUrl: elements.icecastUrl.value.trim(),
         preRollSeconds: Number(elements.preRollSeconds.value || 10),
         maxRecordSeconds: Number(elements.maxRecordSeconds.value || 180),
       }),
@@ -464,11 +474,14 @@ async function loadSameCodeMap() {
 
 async function persistServerSettings(silent = true) {
   try {
+    const sourceMode = currentMonitorSourceMode();
     const response = await fetch("/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        deviceId: Number(elements.deviceSelect.value),
+        sourceMode,
+        deviceId: sourceMode === "device" ? Number(elements.deviceSelect.value) : null,
+        icecastUrl: elements.icecastUrl.value.trim(),
         preRollSeconds: Number(elements.preRollSeconds.value || 10),
         maxRecordSeconds: Number(elements.maxRecordSeconds.value || 180),
         autoLivePlaybackOnAlert: elements.autoLivePlaybackOnAlert.checked,
@@ -659,6 +672,7 @@ function mixToMono(audioBuffer) {
 function renderDeviceOptions(devices) {
   if (!devices.length) {
     elements.deviceSelect.innerHTML = `<option value="-1">No server audio inputs found</option>`;
+    syncMonitorSourceMode();
     return;
   }
 
@@ -680,6 +694,12 @@ function renderDeviceOptions(devices) {
 function applyServerSettings(settings) {
   if (!settings) {
     return;
+  }
+  if (settings.sourceMode != null) {
+    elements.monitorSourceMode.value = String(settings.sourceMode) === "icecast" ? "icecast" : "device";
+  }
+  if (settings.icecastUrl != null) {
+    elements.icecastUrl.value = String(settings.icecastUrl);
   }
   if (settings.preRollSeconds != null) {
     elements.preRollSeconds.value = String(settings.preRollSeconds);
@@ -739,11 +759,32 @@ function applyServerSettings(settings) {
       elements.deviceSelect.value = targetValue;
     }
   }
+  syncMonitorSourceMode();
 }
 
 function currentServerDeviceLabel() {
+  if (currentMonitorSourceMode() === "icecast") {
+    return elements.icecastUrl.value.trim() || "Server Icecast stream";
+  }
   const option = elements.deviceSelect.selectedOptions?.[0];
   return option?.textContent || "Server audio device";
+}
+
+function currentMonitorSourceMode() {
+  return elements.monitorSourceMode.value === "icecast" ? "icecast" : "device";
+}
+
+function handleMonitorSourceModeChange() {
+  syncMonitorSourceMode();
+}
+
+function syncMonitorSourceMode() {
+  const sourceMode = currentMonitorSourceMode();
+  const usingIcecast = sourceMode === "icecast";
+  elements.deviceSourceFields.hidden = usingIcecast;
+  elements.icecastSourceField.hidden = !usingIcecast;
+  elements.refreshDevicesButton.disabled = usingIcecast;
+  elements.deviceSelect.disabled = usingIcecast;
 }
 
 function addActivity(title, detail, level = "info") {
@@ -924,6 +965,7 @@ function detectionMethodLabelForKind(sourceKind) {
   const normalized = String(sourceKind || "").trim().toLowerCase();
   const labels = {
     "server-device": "Server audio device",
+    "server-icecast": "Server Icecast stream",
     "browser-offline-file": "Uploaded audio file",
     "browser-url-file": "Remote URL file",
     "browser-stream": "Browser live stream",

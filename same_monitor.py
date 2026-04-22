@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import queue
+import subprocess
 import threading
 import time
 import urllib.parse
@@ -24,6 +25,9 @@ EOM_TIMEOUT_SECONDS = 5.0
 NTFY_DEFAULT_BASE_URL = "https://ntfy.sh"
 NTFY_DEFAULT_PRIORITY = "high"
 NTFY_DEFAULT_TAGS = "warning,radio"
+DEFAULT_MONITOR_SOURCE_MODE = "device"
+STREAM_MONITOR_SAMPLE_RATE = 22050
+STREAM_MONITOR_CHUNK_SAMPLES = 4096
 
 
 class ServerAudioMonitor:
@@ -39,6 +43,11 @@ class ServerAudioMonitor:
         self.lock = threading.RLock()
         self.running = False
         self.stream: sd.InputStream | None = None
+        self.stream_worker: threading.Thread | None = None
+        self.stream_process: subprocess.Popen[bytes] | None = None
+        self.stream_stop_event: threading.Event | None = None
+        self.monitor_source_mode = DEFAULT_MONITOR_SOURCE_MODE
+        self.icecast_url = ""
         self.device_id: int | None = None
         self.device_name = "None"
         self.sample_rate = 0
@@ -72,7 +81,7 @@ class ServerAudioMonitor:
         self._load_settings()
         self.notification_thread = threading.Thread(
             target=self._run_notification_worker,
-            name="samecode-ntfy",
+            name="samestation-ntfy",
             daemon=True,
         )
         self.notification_thread.start()
@@ -100,14 +109,36 @@ class ServerAudioMonitor:
             )
         return devices
 
-    def start(self, device_id: int, pre_roll_seconds: int = 10, max_record_seconds: int = 180) -> None:
+    def start(
+        self,
+        device_id: int | None,
+        *,
+        pre_roll_seconds: int = 10,
+        max_record_seconds: int = 180,
+        source_mode: str = DEFAULT_MONITOR_SOURCE_MODE,
+        icecast_url: str | None = None,
+    ) -> None:
         with self.lock:
             if self.running:
                 self.stop("restarted")
 
-            device = sd.query_devices(device_id, "input")
-            self.device_id = int(device_id)
-            self.device_name = str(device["name"])
+            normalized_source_mode = sanitize_monitor_source_mode(source_mode)
+            normalized_stream_url = sanitize_stream_url(icecast_url)
+            device: dict[str, Any] | None = None
+            if normalized_source_mode == "device":
+                if device_id is None:
+                    raise ValueError("Choose a server audio input device first.")
+                device = sd.query_devices(int(device_id), "input")
+                self.device_id = int(device_id)
+                self.device_name = str(device["name"])
+                self.icecast_url = ""
+            else:
+                if not normalized_stream_url:
+                    raise ValueError("Enter an Icecast stream URL first.")
+                self.device_id = None
+                self.device_name = stream_label_for_url(normalized_stream_url)
+                self.icecast_url = normalized_stream_url
+            self.monitor_source_mode = normalized_source_mode
             self.pre_roll_seconds = max(0, int(pre_roll_seconds))
             self.max_record_seconds = max(15, int(max_record_seconds))
             self._persist_settings()
@@ -117,26 +148,50 @@ class ServerAudioMonitor:
             self.current_recording = None
             self.running = False
 
-            stream, opened_rate, open_detail = self._open_input_stream(device)
-            self.stream = stream
-            self.sample_rate = opened_rate
-            self.running = True
-            self.stream.start()
-            self._add_activity("Server monitor started", f"{self.device_name} @ {self.sample_rate} Hz")
-            self._add_activity("Input stream config", open_detail)
+            if normalized_source_mode == "device":
+                assert device is not None
+                stream, opened_rate, open_detail = self._open_input_stream(device)
+                self.stream = stream
+                self.sample_rate = opened_rate
+                self.running = True
+                self.stream.start()
+                self._add_activity("Server monitor started", f"{self.device_name} @ {self.sample_rate} Hz")
+                self._add_activity("Input stream config", open_detail)
+            else:
+                self.sample_rate = STREAM_MONITOR_SAMPLE_RATE
+                stop_event = threading.Event()
+                worker = threading.Thread(
+                    target=self._run_icecast_worker,
+                    args=(self.icecast_url, stop_event),
+                    name="samestation-icecast",
+                    daemon=True,
+                )
+                self.stream_stop_event = stop_event
+                self.stream_worker = worker
+                self.running = True
+                worker.start()
+                self._add_activity("Server monitor started", f"{self.device_name} @ {self.sample_rate} Hz")
+                self._add_activity("Icecast stream source", self.icecast_url)
 
     def stop(self, reason: str = "stopped") -> None:
+        stream_to_close: sd.InputStream | None = None
+        stream_worker: threading.Thread | None = None
+        stream_process: subprocess.Popen[bytes] | None = None
+        stream_stop_event: threading.Event | None = None
         with self.lock:
             self.running = False
             if self.current_recording is not None:
                 self._finalize_recording(reason if reason != "stopped" else "monitor_stopped")
 
             if self.stream is not None:
-                try:
-                    self.stream.stop()
-                finally:
-                    self.stream.close()
+                stream_to_close = self.stream
                 self.stream = None
+            stream_worker = self.stream_worker
+            self.stream_worker = None
+            stream_process = self.stream_process
+            self.stream_process = None
+            stream_stop_event = self.stream_stop_event
+            self.stream_stop_event = None
 
             for listener_queue in list(self.live_listeners.values()):
                 try:
@@ -144,12 +199,40 @@ class ServerAudioMonitor:
                 except queue.Full:
                     pass
 
-            self._add_activity("Server monitor stopped", reason.replace("_", " "))
+        if stream_stop_event is not None:
+            stream_stop_event.set()
+
+        if stream_to_close is not None:
+            try:
+                stream_to_close.stop()
+            finally:
+                stream_to_close.close()
+
+        if stream_process is not None:
+            try:
+                stream_process.terminate()
+                stream_process.wait(timeout=2)
+            except Exception:
+                try:
+                    stream_process.kill()
+                except Exception:
+                    pass
+
+        if (
+            stream_worker is not None
+            and stream_worker.is_alive()
+            and stream_worker is not threading.current_thread()
+        ):
+            stream_worker.join(timeout=2)
+
+        self._add_activity("Server monitor stopped", reason.replace("_", " "))
 
     def get_status(self) -> dict[str, Any]:
         with self.lock:
             return {
                 "running": self.running,
+                "sourceMode": self.monitor_source_mode,
+                "icecastUrl": self.icecast_url,
                 "deviceId": self.device_id,
                 "deviceName": self.device_name,
                 "sampleRate": self.sample_rate,
@@ -164,6 +247,8 @@ class ServerAudioMonitor:
     def get_settings(self) -> dict[str, Any]:
         with self.lock:
             return {
+                "sourceMode": self.monitor_source_mode,
+                "icecastUrl": self.icecast_url,
                 "deviceId": self.device_id,
                 "deviceName": self.device_name,
                 "preRollSeconds": self.pre_roll_seconds,
@@ -188,6 +273,8 @@ class ServerAudioMonitor:
     def update_settings(
         self,
         *,
+        source_mode: str | None = None,
+        icecast_url: str | None = None,
         device_id: int | None = None,
         pre_roll_seconds: int | None = None,
         max_record_seconds: int | None = None,
@@ -208,7 +295,13 @@ class ServerAudioMonitor:
         ntfy_notify_on_completed: bool | None = None,
     ) -> dict[str, Any]:
         with self.lock:
-            if device_id is not None:
+            if source_mode is not None:
+                self.monitor_source_mode = sanitize_monitor_source_mode(source_mode)
+            if icecast_url is not None:
+                self.icecast_url = sanitize_stream_url(icecast_url)
+            if self.monitor_source_mode == "icecast":
+                self.device_name = stream_label_for_url(self.icecast_url) if self.icecast_url else "Icecast stream"
+            if device_id is not None and self.monitor_source_mode != "icecast":
                 self.device_id = int(device_id)
                 self.device_name = self._lookup_device_name(self.device_id)
             if pre_roll_seconds is not None:
@@ -415,7 +508,7 @@ class ServerAudioMonitor:
                 '<?xml-stylesheet type="text/xsl" href="/alerts.xsl"?>',
                 '<rss version="2.0">',
                 "  <channel>",
-                "    <title>SAMECode Alerts</title>",
+                "    <title>SAMEStation Alerts</title>",
                 f"    <link>{escape(base_url)}/</link>",
                 "    <description>Recorded SAME alerts captured by the server-side audio monitor.</description>",
                 *items,
@@ -428,12 +521,15 @@ class ServerAudioMonitor:
 
     def _audio_callback(self, indata: np.ndarray, frames: int, time_info: Any, status: Any) -> None:
         mono = np.asarray(indata[:, 0], dtype=np.float32).copy()
+        self._process_audio_chunk(mono, status_text=str(status) if status else None)
+
+    def _process_audio_chunk(self, mono: np.ndarray, status_text: str | None = None) -> None:
         with self.lock:
             if not self.running:
                 return
 
-            if status:
-                self._add_activity("Audio callback status", str(status))
+            if status_text:
+                self._add_activity("Audio callback status", status_text)
 
             self._broadcast_live_audio(mono)
             self._append_pre_roll(mono)
@@ -456,6 +552,111 @@ class ServerAudioMonitor:
                         f"No additional EOM burst arrived within {int(EOM_TIMEOUT_SECONDS)} seconds.",
                     )
                     self._finalize_recording("eom_timeout")
+
+    def _run_icecast_worker(self, stream_url: str, stop_event: threading.Event) -> None:
+        stderr_lines: deque[str] = deque(maxlen=10)
+        process: subprocess.Popen[bytes] | None = None
+        try:
+            try:
+                from imageio_ffmpeg import get_ffmpeg_exe
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError("Icecast stream support requires imageio-ffmpeg to be installed.") from exc
+
+            ffmpeg_path = get_ffmpeg_exe()
+            command = [
+                ffmpeg_path,
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "warning",
+                "-i",
+                stream_url,
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                str(STREAM_MONITOR_SAMPLE_RATE),
+                "-f",
+                "s16le",
+                "-",
+            ]
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=0,
+            )
+            with self.lock:
+                if not self.running or self.stream_stop_event is not stop_event:
+                    process.terminate()
+                    return
+                self.stream_process = process
+
+            stderr_thread = threading.Thread(
+                target=self._drain_stream_stderr,
+                args=(process, stderr_lines),
+                name="samestation-icecast-stderr",
+                daemon=True,
+            )
+            stderr_thread.start()
+
+            chunk_bytes = STREAM_MONITOR_CHUNK_SAMPLES * 2
+            while not stop_event.is_set():
+                if process.stdout is None:
+                    break
+                chunk = process.stdout.read(chunk_bytes)
+                if not chunk:
+                    break
+                sample_count = len(chunk) // 2
+                if sample_count <= 0:
+                    continue
+                mono = np.frombuffer(chunk[: sample_count * 2], dtype=np.int16).astype(np.float32) / 32768.0
+                self._process_audio_chunk(mono)
+
+            if stop_event.is_set():
+                return
+
+            time.sleep(0.15)
+            detail = next((line for line in reversed(stderr_lines) if line), "") or "The Icecast stream stopped sending audio."
+            self._add_activity("Icecast stream ended", detail)
+            threading.Thread(
+                target=lambda: self.stop("stream_ended"),
+                name="samestation-icecast-stop",
+                daemon=True,
+            ).start()
+        except Exception as exc:  # noqa: BLE001
+            if stop_event.is_set():
+                return
+            self._add_activity("Icecast stream error", str(exc))
+            threading.Thread(
+                target=lambda: self.stop("stream_error"),
+                name="samestation-icecast-stop",
+                daemon=True,
+            ).start()
+        finally:
+            if process is not None:
+                try:
+                    process.terminate()
+                    process.wait(timeout=1)
+                except Exception:
+                    try:
+                        process.kill()
+                    except Exception:
+                        pass
+            with self.lock:
+                if self.stream_process is process:
+                    self.stream_process = None
+
+    def _drain_stream_stderr(self, process: subprocess.Popen[bytes], stderr_lines: deque[str]) -> None:
+        if process.stderr is None:
+            return
+        try:
+            for raw_line in iter(process.stderr.readline, b""):
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if line:
+                    stderr_lines.append(line)
+        except Exception:
+            return
 
     def _append_pre_roll(self, chunk: np.ndarray) -> None:
         if self.pre_roll_seconds <= 0:
@@ -546,9 +747,9 @@ class ServerAudioMonitor:
             "recordId": record_id,
             "confidence": float(burst.get("confidence", 0.0)),
             "repeatCount": 1,
-            "sourceKind": "server-device",
-            "sourceLabel": self.device_name,
-            "detectionMethodLabel": detection_method_label_for_kind("server-device"),
+            "sourceKind": self._server_source_kind(),
+            "sourceLabel": self._server_source_label(),
+            "detectionMethodLabel": detection_method_label_for_kind(self._server_source_kind()),
             "detectedAt": self.current_recording["startedAt"],
             "detectedPubDate": self.current_recording.get("detectedPubDate"),
             "completedAt": None,
@@ -594,9 +795,9 @@ class ServerAudioMonitor:
             "recordId": recording["recordId"],
             "confidence": float(recording.get("confidence", 0.0)),
             "repeatCount": int(recording.get("repeatCount", 1)),
-            "sourceKind": "server-device",
-            "sourceLabel": self.device_name,
-            "detectionMethodLabel": detection_method_label_for_kind("server-device"),
+            "sourceKind": self._server_source_kind(),
+            "sourceLabel": self._server_source_label(),
+            "detectionMethodLabel": detection_method_label_for_kind(self._server_source_kind()),
             "detectedAt": recording["startedAt"],
             "detectedPubDate": recording.get("detectedPubDate"),
             "completedAt": now_iso(),
@@ -648,7 +849,11 @@ class ServerAudioMonitor:
             settings = {}
 
         saved_device_id = settings.get("deviceId")
-        if saved_device_id is not None:
+        self.monitor_source_mode = sanitize_monitor_source_mode(str(settings.get("sourceMode", self.monitor_source_mode)))
+        self.icecast_url = sanitize_stream_url(str(settings.get("icecastUrl", self.icecast_url)))
+        if self.monitor_source_mode == "icecast":
+            self.device_name = stream_label_for_url(self.icecast_url) if self.icecast_url else "Icecast stream"
+        elif saved_device_id is not None:
             try:
                 self.device_id = int(saved_device_id)
                 self.device_name = self._lookup_device_name(self.device_id)
@@ -682,6 +887,8 @@ class ServerAudioMonitor:
 
     def _persist_settings(self) -> None:
         payload = {
+            "sourceMode": self.monitor_source_mode,
+            "icecastUrl": self.icecast_url,
             "deviceId": self.device_id,
             "deviceName": self.device_name,
             "preRollSeconds": self.pre_roll_seconds,
@@ -734,6 +941,14 @@ class ServerAudioMonitor:
                 self._persist_alerts()
                 self._emit_event("recording-updated")
                 return
+
+    def _server_source_kind(self) -> str:
+        return "server-icecast" if self.monitor_source_mode == "icecast" else "server-device"
+
+    def _server_source_label(self) -> str:
+        if self.monitor_source_mode == "icecast":
+            return self.icecast_url or self.device_name or "Icecast stream"
+        return self.device_name or "Server audio device"
 
     def _serialize_burst(self, burst: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -947,6 +1162,7 @@ def detection_method_label_for_kind(source_kind: str) -> str:
     normalized = str(source_kind or "").strip().lower()
     labels = {
         "server-device": "Server audio device",
+        "server-icecast": "Server Icecast stream",
         "browser-offline-file": "Uploaded audio file",
         "browser-url-file": "Remote URL file",
         "browser-stream": "Browser live stream",
@@ -974,6 +1190,36 @@ def sanitize_base_url(value: str) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return ""
     return candidate
+
+
+def sanitize_monitor_source_mode(value: str) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized == "icecast":
+        return "icecast"
+    return DEFAULT_MONITOR_SOURCE_MODE
+
+
+def sanitize_stream_url(value: str | None) -> str:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return ""
+    parsed = urllib.parse.urlparse(candidate)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Icecast stream URLs must use http or https.")
+    return candidate
+
+
+def stream_label_for_url(raw_url: str) -> str:
+    candidate = sanitize_stream_url(raw_url)
+    if not candidate:
+        return "Icecast stream"
+    parsed = urllib.parse.urlparse(candidate)
+    host = parsed.netloc or "Icecast stream"
+    path = parsed.path.rstrip("/")
+    if path and path != "/":
+        tail = path.rsplit("/", 1)[-1]
+        return f"{host} / {tail}"
+    return host
 
 
 def sanitize_ntfy_priority(value: str) -> str:
