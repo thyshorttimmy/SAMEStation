@@ -1,19 +1,26 @@
 from __future__ import annotations
 
 import argparse
-import importlib
 import json
 import logging
+import os
 import subprocess
 import sys
 import threading
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from queue import Empty, SimpleQueue
-from typing import Literal
 
+from samestation_autostart import is_windows_auto_start_enabled, sync_windows_auto_start
 from same_paths import app_root
+from samestation_runtime import ModeName, format_missing_dependencies, missing_dependencies_for_mode
+from samestation_update import (
+    UPDATE_CHANNELS,
+    check_for_updates,
+    current_version_label,
+    launch_installer,
+    normalize_update_channel,
+)
 
 
 WINDOW_TITLE = "SAMEStation"
@@ -25,16 +32,6 @@ DEFAULT_PORT = 8000
 DEFAULT_SERVER_URL = f"http://127.0.0.1:{DEFAULT_PORT}"
 LOG_FORMAT = "%(asctime)s | %(levelname)s | %(message)s"
 LAUNCHER_SETTINGS_PATH = app_root() / "data" / "launcher-settings.json"
-AUTO_START_TASK_NAME = "SAMEStation Auto Start"
-ModeName = Literal["server", "client", "both"]
-DependencySpec = tuple[str, str, str, set[ModeName]]
-RUNTIME_DEPENDENCIES: tuple[DependencySpec, ...] = (
-    ("webview", "pywebview[winforms]", "pywebview", {"client", "server", "both"}),
-    ("numpy", "numpy", "numpy", {"server", "both"}),
-    ("sounddevice", "sounddevice", "sounddevice", {"server", "both"}),
-    ("yt_dlp", "yt-dlp", "yt-dlp", {"server", "both"}),
-    ("imageio_ffmpeg", "imageio-ffmpeg", "imageio-ffmpeg", {"server", "both"}),
-)
 
 CONSOLE_HTML = """
 <!doctype html>
@@ -215,6 +212,9 @@ class LaunchSelection:
     auto_start_pre_roll: int | None = None
     auto_start_max_record: int | None = None
     auto_start_with_windows: bool = False
+    update_channel: str = "stable"
+    check_updates_on_start: bool = True
+    install_updates_on_start: bool = False
 
 
 class BufferedLogHandler(logging.Handler):
@@ -455,6 +455,9 @@ def save_launcher_settings(selection: LaunchSelection) -> None:
         "autoStartPreRoll": selection.auto_start_pre_roll,
         "autoStartMaxRecord": selection.auto_start_max_record,
         "autoStartWithWindows": selection.auto_start_with_windows,
+        "updateChannel": selection.update_channel,
+        "checkUpdatesOnStart": selection.check_updates_on_start,
+        "installUpdatesOnStart": selection.install_updates_on_start,
     }
     LAUNCHER_SETTINGS_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -465,7 +468,7 @@ def load_saved_selection() -> LaunchSelection:
         mode = normalize_mode(str(settings.get("mode") or "both"))
     except ValueError:
         mode = "both"
-    return LaunchSelection(
+    selection = LaunchSelection(
         mode=mode,
         server_url=normalize_server_url(str(settings.get("serverUrl") or DEFAULT_SERVER_URL)),
         port=int(settings.get("port") or DEFAULT_PORT),
@@ -486,126 +489,13 @@ def load_saved_selection() -> LaunchSelection:
             else None
         ),
         auto_start_with_windows=bool(settings.get("autoStartWithWindows", False)),
+        update_channel=normalize_update_channel(str(settings.get("updateChannel") or "stable")),
+        check_updates_on_start=bool(settings.get("checkUpdatesOnStart", True)),
+        install_updates_on_start=bool(settings.get("installUpdatesOnStart", False)),
     )
-
-
-def is_windows_auto_start_enabled() -> bool:
-    command = [
-        "schtasks",
-        "/Query",
-        "/TN",
-        AUTO_START_TASK_NAME,
-    ]
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
-    return result.returncode == 0
-
-
-def build_auto_start_command_args(selection: LaunchSelection) -> list[str]:
-    args = [f"--{selection.mode}"]
-    if selection.mode == "client":
-        args.extend(["--server-url", selection.server_url])
-    if selection.mode in {"server", "both"}:
-        args.extend(["--port", str(selection.port)])
-        if selection.auto_start_monitor:
-            args.append("--auto-start-monitor")
-        if selection.auto_start_device_id is not None:
-            args.extend(["--device-id", str(selection.auto_start_device_id)])
-        if selection.auto_start_pre_roll is not None:
-            args.extend(["--pre-roll", str(selection.auto_start_pre_roll)])
-        if selection.auto_start_max_record is not None:
-            args.extend(["--max-record", str(selection.auto_start_max_record)])
-    return args
-
-
-def build_auto_start_command_line(selection: LaunchSelection) -> str:
-    args = build_auto_start_command_args(selection)
-    if getattr(sys, "frozen", False):
-        executable = str(Path(sys.executable).resolve())
-        parts = [quote_windows_arg(executable), *[quote_windows_arg(arg) for arg in args]]
-    else:
-        script = str(Path(__file__).resolve())
-        python_executable = str(Path(sys.executable).resolve())
-        parts = [quote_windows_arg(python_executable), quote_windows_arg(script), *[quote_windows_arg(arg) for arg in args]]
-    return " ".join(parts)
-
-
-def dependency_specs_for_mode(mode: ModeName) -> list[DependencySpec]:
-    return [spec for spec in RUNTIME_DEPENDENCIES if mode in spec[3]]
-
-
-def missing_dependencies_for_mode(mode: ModeName) -> list[DependencySpec]:
-    missing: list[DependencySpec] = []
-    for spec in dependency_specs_for_mode(mode):
-        module_name = spec[0]
-        try:
-            importlib.import_module(module_name)
-        except Exception:  # noqa: BLE001
-            missing.append(spec)
-    return missing
-
-
-def format_missing_dependencies(missing: list[DependencySpec]) -> str:
-    labels = [spec[2] for spec in missing]
-    if not labels:
-        return "All required dependencies are ready for this launch mode."
-    return f"Missing dependencies: {', '.join(labels)}."
-
-
-def install_missing_dependencies_for_mode(mode: ModeName) -> str:
-    if getattr(sys, "frozen", False):
-        raise RuntimeError("The packaged EXE already includes its Python dependencies. Rebuild the app if the bundle is incomplete.")
-    missing = missing_dependencies_for_mode(mode)
-    if not missing:
-        return "All required dependencies are already installed."
-    package_specs: list[str] = []
-    seen: set[str] = set()
-    for _module_name, package_name, _label, _modes in missing:
-        if package_name in seen:
-            continue
-        seen.add(package_name)
-        package_specs.append(package_name)
-    command = [str(Path(sys.executable).resolve()), "-m", "pip", "install", *package_specs]
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Unable to install missing dependencies.")
-    return f"Installed: {', '.join(package_specs)}"
-
-
-def quote_windows_arg(value: str) -> str:
-    escaped = str(value).replace('"', '\\"')
-    return f'"{escaped}"'
-
-
-def sync_windows_auto_start(selection: LaunchSelection) -> None:
-    enabled = bool(selection.auto_start_with_windows)
-    if enabled:
-        command_line = build_auto_start_command_line(selection)
-        command = [
-            "schtasks",
-            "/Create",
-            "/TN",
-            AUTO_START_TASK_NAME,
-            "/SC",
-            "ONLOGON",
-            "/RL",
-            "LIMITED",
-            "/TR",
-            command_line,
-            "/F",
-        ]
-    else:
-        command = [
-            "schtasks",
-            "/Delete",
-            "/TN",
-            AUTO_START_TASK_NAME,
-            "/F",
-        ]
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
-    if enabled and result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Unable to create auto-start task.")
-    if not enabled and result.returncode not in {0, 1}:
-        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Unable to remove auto-start task.")
+    if selection.install_updates_on_start:
+        selection.check_updates_on_start = True
+    return selection
 
 
 def choose_launch_selection(default_selection: LaunchSelection) -> LaunchSelection | None:
@@ -617,16 +507,17 @@ def choose_launch_selection(default_selection: LaunchSelection) -> LaunchSelecti
         "server_url": default_selection.server_url,
         "auto_start_monitor": default_selection.auto_start_monitor,
         "auto_start_with_windows": default_selection.auto_start_with_windows,
+        "update_channel": default_selection.update_channel,
+        "check_updates_on_start": default_selection.check_updates_on_start,
+        "install_updates_on_start": default_selection.install_updates_on_start,
         "confirmed": False,
     }
-    dependency_state: dict[str, list[DependencySpec]] = {
-        "missing": [],
-    }
+    update_state = {"running": False}
 
     root = tk.Tk()
     root.title("Launch SAMEStation")
-    root.geometry("680x720")
-    root.minsize(640, 680)
+    root.geometry("720x860")
+    root.minsize(680, 780)
     root.configure(bg="#f4f1e8")
     root.resizable(True, True)
 
@@ -642,16 +533,19 @@ def choose_launch_selection(default_selection: LaunchSelection) -> LaunchSelecti
     ttk.Label(outer, text="Launch SAMEStation", font=("Segoe UI", 18, "bold")).pack(anchor="w")
     ttk.Label(
         outer,
-        text="Pick whether this copy should act as the local server, a client against another SAMEStation server, or both at once.",
-        wraplength=500,
+        text=f"Pick whether this copy should act as the local server, a client against another SAMEStation server, or both at once. Installed build: {current_version_label()}",
+        wraplength=620,
     ).pack(anchor="w", pady=(8, 16))
 
     mode_var = tk.StringVar(value=default_selection.mode)
     server_url_var = tk.StringVar(value=default_selection.server_url)
     auto_start_monitor_var = tk.BooleanVar(value=default_selection.auto_start_monitor)
     auto_start_with_windows_var = tk.BooleanVar(value=default_selection.auto_start_with_windows)
+    update_channel_var = tk.StringVar(value=default_selection.update_channel)
+    check_updates_on_start_var = tk.BooleanVar(value=default_selection.check_updates_on_start)
+    install_updates_on_start_var = tk.BooleanVar(value=default_selection.install_updates_on_start)
     error_var = tk.StringVar(value="")
-    dependency_var = tk.StringVar(value="")
+    update_var = tk.StringVar(value="Choose a branch channel, then check for updates or open the installer.")
 
     options = [
         ("server", "Server", "Run the local SAMEStation server and show the server console window only."),
@@ -687,17 +581,36 @@ def choose_launch_selection(default_selection: LaunchSelection) -> LaunchSelecti
         variable=auto_start_with_windows_var,
     ).pack(anchor="w", pady=(8, 0))
 
-    dependency_frame = ttk.Frame(outer)
-    dependency_frame.pack(fill="x", pady=(18, 0))
-    ttk.Label(dependency_frame, text="Dependencies").pack(anchor="w")
+    update_frame = ttk.LabelFrame(outer, text="Updates", padding=14)
+    update_frame.pack(fill="x", pady=(18, 0))
     ttk.Label(
-        dependency_frame,
-        text="Check whether this launch mode has everything it needs, or install any missing Python packages automatically.",
-        wraplength=560,
-    ).pack(anchor="w", pady=(4, 8))
-    ttk.Label(dependency_frame, textvariable=dependency_var, wraplength=560, foreground="#39454a").pack(anchor="w")
-    dependency_actions = ttk.Frame(dependency_frame)
-    dependency_actions.pack(anchor="w", pady=(10, 0))
+        update_frame,
+        text="Use the bundled installer to move between stable and test builds. The launcher can also check for updates each time it opens and hand off to the installer automatically.",
+        wraplength=600,
+    ).pack(anchor="w")
+    channel_row = ttk.Frame(update_frame)
+    channel_row.pack(fill="x", pady=(10, 0))
+    ttk.Label(channel_row, text="Update Branch").pack(anchor="w")
+    update_channel_box = ttk.Combobox(
+        channel_row,
+        textvariable=update_channel_var,
+        state="readonly",
+        values=[channel for channel in UPDATE_CHANNELS],
+    )
+    update_channel_box.pack(fill="x", pady=(6, 0))
+    ttk.Checkbutton(
+        update_frame,
+        text="Check for updates when the launcher opens",
+        variable=check_updates_on_start_var,
+    ).pack(anchor="w", pady=(12, 0))
+    ttk.Checkbutton(
+        update_frame,
+        text="Install updates automatically on launcher start",
+        variable=install_updates_on_start_var,
+    ).pack(anchor="w", pady=(8, 0))
+    ttk.Label(update_frame, textvariable=update_var, wraplength=600, foreground="#39454a").pack(anchor="w", pady=(12, 0))
+    update_actions = ttk.Frame(update_frame)
+    update_actions.pack(anchor="w", pady=(12, 0))
 
     def sync_field_state(*_args) -> None:
         state = "normal" if mode_var.get() == "client" else "disabled"
@@ -709,36 +622,73 @@ def choose_launch_selection(default_selection: LaunchSelection) -> LaunchSelecti
             label = str(child.cget("text"))
             if "server monitor" in label:
                 child.configure(state=monitor_state)
-        refresh_dependency_status()
+        if install_updates_on_start_var.get():
+            check_updates_on_start_var.set(True)
 
-    def refresh_dependency_status(success_message: str | None = None) -> None:
-        missing = missing_dependencies_for_mode(normalize_mode(mode_var.get()))
-        dependency_state["missing"] = missing
-        if success_message:
-            dependency_var.set(f"{success_message}\n{format_missing_dependencies(missing)}")
-        else:
-            dependency_var.set(format_missing_dependencies(missing))
-        install_state = "disabled" if not missing or getattr(sys, "frozen", False) else "normal"
-        install_button.configure(state=install_state)
+    def apply_update_check_result(message: str, *, auto_install: bool) -> None:
+        update_state["running"] = False
+        check_button.configure(state="normal")
+        update_button.configure(state="normal")
+        update_var.set(message)
+        if auto_install:
+            open_installer(install_now=True)
 
-    def install_dependencies() -> None:
+    def run_update_check(*, auto_install: bool = False) -> None:
+        if update_state["running"]:
+            return
         error_var.set("")
-        dependency_var.set("Installing missing dependencies for the selected mode...")
-        root.update_idletasks()
+        update_state["running"] = True
+        update_var.set("Checking GitHub for the selected branch channel...")
+        check_button.configure(state="disabled")
+        update_button.configure(state="disabled")
+        channel = normalize_update_channel(update_channel_var.get())
+
+        def worker() -> None:
+            payload = check_for_updates(channel)
+
+            def finish() -> None:
+                try:
+                    apply_update_check_result(payload.message, auto_install=auto_install and payload.available and payload.release is not None)
+                except tk.TclError:
+                    pass
+
+            try:
+                root.after(0, finish)
+            except tk.TclError:
+                pass
+
+        threading.Thread(target=worker, name="samestation-update-check", daemon=True).start()
+
+    def open_installer(*, install_now: bool) -> None:
         try:
-            message = install_missing_dependencies_for_mode(normalize_mode(mode_var.get()))
-            refresh_dependency_status(success_message=message)
-        except RuntimeError as exc:
+            launch_installer(
+                channel=normalize_update_channel(update_channel_var.get()),
+                mode=normalize_mode(mode_var.get()),
+                install_now=install_now,
+                auto_install_dependencies=True,
+                start_app_after=True,
+                wait_for_pids=[os.getpid()],
+            )
+            root.destroy()
+        except Exception as exc:  # noqa: BLE001
+            update_state["running"] = False
+            check_button.configure(state="normal")
+            update_button.configure(state="normal")
             error_var.set(str(exc))
-            refresh_dependency_status()
+
+    def sync_update_toggles(*_args) -> None:
+        if install_updates_on_start_var.get():
+            check_updates_on_start_var.set(True)
 
     mode_var.trace_add("write", sync_field_state)
-    ttk.Button(dependency_actions, text="Check Dependencies", command=refresh_dependency_status).pack(side="left")
-    install_button = ttk.Button(dependency_actions, text="Install Missing", command=install_dependencies)
-    install_button.pack(side="left", padx=(10, 0))
+    install_updates_on_start_var.trace_add("write", sync_update_toggles)
+    check_button = ttk.Button(update_actions, text="Check Now", command=lambda: run_update_check(auto_install=False))
+    check_button.pack(side="left")
+    update_button = ttk.Button(update_actions, text="Update", command=lambda: open_installer(install_now=False))
+    update_button.pack(side="left", padx=(10, 0))
     sync_field_state()
 
-    ttk.Label(outer, textvariable=error_var, foreground="#a32117", wraplength=500).pack(anchor="w", pady=(12, 0))
+    ttk.Label(outer, textvariable=error_var, foreground="#a32117", wraplength=620).pack(anchor="w", pady=(12, 0))
 
     ttk.Frame(outer).pack(fill="both", expand=True)
 
@@ -754,9 +704,12 @@ def choose_launch_selection(default_selection: LaunchSelection) -> LaunchSelecti
             result["server_url"] = normalize_server_url(server_url_var.get())
             result["auto_start_monitor"] = bool(auto_start_monitor_var.get())
             result["auto_start_with_windows"] = bool(auto_start_with_windows_var.get())
-            refresh_dependency_status()
-            if dependency_state["missing"]:
-                error_var.set("Install the missing dependencies before launching this mode.")
+            result["update_channel"] = normalize_update_channel(update_channel_var.get())
+            result["check_updates_on_start"] = bool(check_updates_on_start_var.get())
+            result["install_updates_on_start"] = bool(install_updates_on_start_var.get())
+            missing = missing_dependencies_for_mode(result["mode"])
+            if missing:
+                error_var.set(f"{format_missing_dependencies(missing)} Use Update to repair this install profile before launching.")
                 return
             result["confirmed"] = True
             root.destroy()
@@ -791,6 +744,8 @@ def choose_launch_selection(default_selection: LaunchSelection) -> LaunchSelecti
     root.bind("<Return>", lambda _event: launch())
 
     root.protocol("WM_DELETE_WINDOW", cancel)
+    if default_selection.check_updates_on_start:
+        root.after(250, lambda: run_update_check(auto_install=bool(install_updates_on_start_var.get())))
     root.mainloop()
 
     if not result["confirmed"]:
@@ -804,6 +759,9 @@ def choose_launch_selection(default_selection: LaunchSelection) -> LaunchSelecti
         auto_start_device_id=default_selection.auto_start_device_id,
         auto_start_pre_roll=default_selection.auto_start_pre_roll,
         auto_start_max_record=default_selection.auto_start_max_record,
+        update_channel=str(result["update_channel"]),
+        check_updates_on_start=bool(result["check_updates_on_start"]),
+        install_updates_on_start=bool(result["install_updates_on_start"]),
     )
 
 
@@ -856,6 +814,9 @@ def build_selection(args: argparse.Namespace) -> LaunchSelection | None:
         auto_start_pre_roll=args.pre_roll if args.pre_roll is not None else saved_selection.auto_start_pre_roll,
         auto_start_max_record=args.max_record if args.max_record is not None else saved_selection.auto_start_max_record,
         auto_start_with_windows=saved_selection.auto_start_with_windows,
+        update_channel=saved_selection.update_channel,
+        check_updates_on_start=saved_selection.check_updates_on_start,
+        install_updates_on_start=saved_selection.install_updates_on_start,
     )
 
 
@@ -885,13 +846,22 @@ def main() -> None:
     missing = missing_dependencies_for_mode(selection.mode)
     if missing:
         parser.error(
-            f"{format_missing_dependencies(missing)} Run the launcher without explicit mode flags to use the dependency installer first."
+            f"{format_missing_dependencies(missing)} Run the launcher without explicit mode flags to open the installer and repair this profile first."
         )
         return
 
     try:
         save_launcher_settings(selection)
-        sync_windows_auto_start(selection)
+        sync_windows_auto_start(
+            enabled=bool(selection.auto_start_with_windows),
+            mode=selection.mode,
+            server_url=selection.server_url,
+            port=selection.port,
+            auto_start_monitor=selection.auto_start_monitor,
+            auto_start_device_id=selection.auto_start_device_id,
+            auto_start_pre_roll=selection.auto_start_pre_roll,
+            auto_start_max_record=selection.auto_start_max_record,
+        )
     except RuntimeError as exc:
         parser.error(str(exc))
         return

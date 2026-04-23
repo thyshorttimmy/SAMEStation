@@ -13,3 +13,4 @@ server.stderr.log
 build/
 dist/
 *.spec
+build_info.json

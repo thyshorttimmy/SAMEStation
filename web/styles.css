@@ -78,6 +78,20 @@ body::before {
   color: var(--accent-strong);
 }
 
+.brand-lockup {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.brand-mark {
+  width: clamp(72px, 10vw, 96px);
+  height: clamp(72px, 10vw, 96px);
+  border-radius: 22px;
+  flex: 0 0 auto;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.24);
+}
+
 h1,
 h2,
 p {
@@ -101,6 +115,18 @@ h2 {
   color: var(--muted);
   font-size: 1.05rem;
   line-height: 1.6;
+}
+
+@media (max-width: 640px) {
+  .brand-lockup {
+    gap: 14px;
+  }
+
+  .brand-mark {
+    width: 64px;
+    height: 64px;
+    border-radius: 18px;
+  }
 }
 
 .hero-status {

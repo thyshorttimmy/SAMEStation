@@ -58,6 +58,7 @@ The author assumes no responsibility for any damages or missed alerts resulting 
 - `Both` mode runs the local server, shows the server console, and opens the client window
 - The launcher remembers the last mode and launch settings you used
 - The launcher can also enable automatic startup at sign-in from a checkbox
+- The launcher can check `Stable` or `Test` builds for updates and hand off to the bundled installer
 
 ## Desktop Launch Arguments
 
@@ -67,6 +68,14 @@ The author assumes no responsibility for any damages or missed alerts resulting 
 - `SAMEStation.exe --server --auto-start-monitor` auto-starts the server audio monitor using the saved device and saved timing settings
 - `SAMEStation.exe --both --auto-start-monitor --device-id 3 --pre-roll 10 --max-record 180` auto-starts monitoring with explicit values
 - `SAMEStation.exe --server --port 8010` starts the local server on a different port
+
+## Installer And Updates
+
+- The packaged app now includes a companion `SAMEStation Installer` tool
+- The installer can target the `Stable` or `Test` release channel
+- The installer lets you choose a default `Client`, `Server`, or `Both` profile for the installed copy
+- The installer automatically checks the dependencies needed for the selected profile and can repair them when running from source
+- The launcher can check for updates on startup, install updates automatically on startup, or open the installer manually with a single `Update` button
 
 ## Server Console
 
