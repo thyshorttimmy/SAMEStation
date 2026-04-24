@@ -286,10 +286,13 @@ def local_payload_asset(role: ProductRole | str, channel: ReleaseChannel | str) 
     spec = product_spec(str(role))
     normalized_channel = normalize_channel(str(channel))
     candidates = [
+        resource_root() / "internal-payloads" / normalized_channel / spec.app_exe_name,
         app_root() / "dist" / "internal-payloads" / normalized_channel / spec.app_exe_name,
         app_root() / "dist" / spec.app_exe_name,
         app_root() / spec.app_exe_name,
     ]
+    if normalized_channel == "nightly":
+        candidates.insert(1, resource_root() / "internal-payloads" / "test" / spec.app_exe_name)
     for candidate in candidates:
         if candidate.exists() and candidate.is_file():
             return candidate

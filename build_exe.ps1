@@ -1,5 +1,7 @@
 param(
-    [switch]$OneFile = $true
+    [switch]$OneFile = $true,
+    [ValidateSet("auto", "stable", "nightly")]
+    [string]$Channel = "auto"
 )
 
 $ErrorActionPreference = "Stop"
@@ -42,9 +44,12 @@ $buildInfo = @{
 }
 $buildInfo | ConvertTo-Json | Set-Content -Path ".\build_info.json" -Encoding UTF8
 
-$payloadChannel = "stable"
-if ($versionTag -match "alpha|beta|test|nightly|rc") {
-    $payloadChannel = "nightly"
+$payloadChannel = $Channel
+if ($payloadChannel -eq "auto") {
+    $payloadChannel = "stable"
+    if ($versionTag -match "alpha|beta|test|nightly|rc") {
+        $payloadChannel = "nightly"
+    }
 }
 
 & $python -m pip install -r requirements.txt -r requirements-build.txt
@@ -53,7 +58,8 @@ function New-BuildArgs {
     param(
         [string]$Name,
         [string]$EntryPoint,
-        [switch]$Console
+        [switch]$Console,
+        [string[]]$ExtraAddData = @()
     )
 
     $args = @(
@@ -67,6 +73,11 @@ function New-BuildArgs {
     "--add-data", "data\same_codes.json;data",
     "--add-data", "build_info.json;."
     )
+
+    foreach ($addData in $ExtraAddData) {
+        $args += "--add-data"
+        $args += $addData
+    }
 
     if ($Console) {
         $args += "--console"
@@ -88,8 +99,11 @@ function New-BuildArgs {
 
 & $python @(New-BuildArgs -Name "SAMEStation Server" -EntryPoint "samestation_server.py")
 & $python @(New-BuildArgs -Name "SAMEStation Client" -EntryPoint "samestation_client.py")
-& $python @(New-BuildArgs -Name "SAMEStation Server Installer" -EntryPoint "samestation_server_installer.py")
-& $python @(New-BuildArgs -Name "SAMEStation Client Installer" -EntryPoint "samestation_client_installer.py")
+
+$serverPayloadAddData = "dist\SAMEStation Server.exe;internal-payloads\$payloadChannel"
+$clientPayloadAddData = "dist\SAMEStation Client.exe;internal-payloads\$payloadChannel"
+& $python @(New-BuildArgs -Name "SAMEStation Server Installer" -EntryPoint "samestation_server_installer.py" -ExtraAddData @($serverPayloadAddData))
+& $python @(New-BuildArgs -Name "SAMEStation Client Installer" -EntryPoint "samestation_client_installer.py" -ExtraAddData @($clientPayloadAddData))
 
 $publicReleaseDir = ".\dist\public-release"
 $internalPayloadDir = ".\dist\internal-payloads"
