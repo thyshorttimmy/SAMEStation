@@ -1,84 +1,127 @@
 # SAMEStation
 
-SAMEStation is a local NOAA Weather Radio `S.A.M.E.` decoder and alert capture app.
+SAMEStation is a local NOAA Weather Radio `S.A.M.E.` decoder and alert capture project with a split `Server` and `Client` product model.
 
 This entire project is AI-generated with Codex GPT-5.4.
 
 ## ⚠️ Disclaimer
 
-SAMEStation is provided as-is for monitoring and experimentation purposes. It is not a certified alerting device and should not be relied on for emergency notifications.
+SAMEStation is provided as-is for monitoring and experimentation purposes. It is not a certified alerting device and should not be relied on for emergency notifications.  
 Always use an official NOAA weather radio or other trusted alerting system for safety-critical alerts.
 
 The author assumes no responsibility for any damages or missed alerts resulting from use of this software.
 
-## What The App Does
+## Product Split
+
+### SAMEStation Server
+
+- Installed product for the machine that does the decoding work
+- Keeps the current web admin console
+- Owns server-side audio device monitoring, Icecast monitoring, recordings, RSS, ntfy, and saved server settings
+- Supports custom server misc-data and recordings paths through the installer
+- Can be configured to launch automatically at sign-in
+
+### SAMEStation Client
+
+- Separate installed desktop product
+- Native client app for alerts, recordings playback, server health, RSS visibility, and connection management
+- Connects to an existing SAMEStation server over the network
+- Supports LAN discovery plus manual server URL entry
+- Keeps a saved manual server URL as a fallback
+
+## Installer-First Releases
+
+Public release pages are intended to expose only:
+
+- `SAMEStation Server Installer.exe`
+- `SAMEStation Client Installer.exe`
+
+The installers are responsible for resolving and installing the real app payloads for the selected product and channel.
+
+## Release Channels
+
+Both installed products support:
+
+- `Stable`
+- `Nightly`
+
+The installer shows the currently installed version for that product, the available payload version for the selected channel, and then installs or updates that product only.
+
+## Server Features
 
 - Decodes `S.A.M.E.` headers from local audio files
 - Decodes from direct audio-file links and live stream URLs
 - Monitors a server-side audio input device continuously
-- Resolves SAME/FIPS location codes to real county and location names
+- Monitors an Icecast stream on the server side
+- Resolves SAME and FIPS location codes to real county and location names
 - Detects repeated header bursts and `NNNN` end-of-message bursts
-
-## Server Audio Monitoring
-
-- Watches a selected Windows audio input device on the server side
-- Keeps a configurable pre-alert audio buffer before detection
-- Starts recording as soon as an alert is detected
-- Stops after the full EOM burst sequence, with timeout fail-safes
-- Saves alert audio as `.wav` files
-- Supports live listening to the monitored server audio
-
-## Alerts And Recordings
-
-- Publishes alerts immediately when detected, then updates them when recording finishes
-- Keeps decoded alert details, raw burst history, and recording status together
-- Shows finished recordings with in-app playback
-- Stores alert history and server settings locally
-- Clears and updates alerts from the server side, not just in the browser
-
-## RSS Feed
-
+- Records alerts with configurable pre-roll
+- Publishes alerts immediately and updates them when the recording finishes
 - Generates an RSS feed for captured alerts
-- Includes the decoded alert details in each feed item
-- Adds the recorded audio file to the alert when one is available
-- Keeps one feed item per alert and updates it as recording completes
-
-## ntfy Phone Notifications
-
 - Sends free phone alerts through `ntfy`
-- Supports separate notifications for first detection and recording completion
-- Supports separate click targets for detected alerts and completed alerts
-- Can optionally open completed alerts directly on the saved recording
-- Lets warnings, watches, advisories, tests, and other alert types use different urgency levels
 
-## Desktop App Modes
+## Client Features
 
-- `Server` mode runs the local server and shows a built-in server console
-- `Client` mode opens the SAMEStation app against an existing SAMEStation server
-- `Both` mode runs the local server, shows the server console, and opens the client window
-- The launcher remembers the last mode and launch settings you used
-- The launcher can also enable automatic startup at sign-in from a checkbox
-- The launcher can check `Stable` or `Test` builds for updates and hand off to the bundled installer
+- Connects to a SAMEStation server and shows current alerts
+- Shows alert details, detection source, and saved recordings
+- Plays finished recordings directly from the server
+- Shows current server monitor status and source information
+- Shows RSS feed availability and ntfy status
+- Supports LAN discovery and manual connection entry
 
-## Desktop Launch Arguments
+## Server Installer Flow
 
-- `SAMEStation.exe --server` launches the local server and server console
-- `SAMEStation.exe --client --server-url http://127.0.0.1:8000` launches the client against an existing server
-- `SAMEStation.exe --both` launches the local server, server console, and client window together
-- `SAMEStation.exe --server --auto-start-monitor` auto-starts the server audio monitor using the saved device and saved timing settings
-- `SAMEStation.exe --both --auto-start-monitor --device-id 3 --pre-roll 10 --max-record 180` auto-starts monitoring with explicit values
-- `SAMEStation.exe --server --port 8010` starts the local server on a different port
+The server installer uses a 4-step flow:
 
-## Installer And Updates
+1. Welcome
+2. Server Setup
+3. Review
+4. Install / Finish
 
-- The packaged app now includes a companion `SAMEStation Installer` tool
-- The installer can target the `Stable` or `Test` release channel
-- The installer lets you choose a default `Client`, `Server`, or `Both` profile for the installed copy
-- The installer automatically checks the dependencies needed for the selected profile and can repair them when running from source
-- The launcher can check for updates on startup, install updates automatically on startup, or open the installer manually with a single `Update` button
+Server setup includes:
 
-## Server Console
+- branch channel selection
+- install location
+- sign-in launch option
+- post-install start option
+- optional browser-open behavior
+- optional monitor auto-start
+- misc-data path
+- recordings path
 
-- Shows live server and monitor log output
-- Supports built-in commands like `help`, `status`, `devices`, `settings`, `alerts`, `start`, `stop`, `clear`, `open`, and `shutdown`
-- Lets you control the server monitor without opening a separate terminal
+Default server storage behavior:
+
+- misc data defaults to a folder with the installed app
+- recordings default to the user `Documents` folder
+
+## Client Installer Flow
+
+The client installer uses a matching 4-step flow:
+
+1. Welcome
+2. Client Setup
+3. Review
+4. Install / Finish
+
+Client setup includes:
+
+- branch channel selection
+- install location
+- sign-in launch option
+- post-install start option
+- preferred server URL
+
+## Internal Payload Source
+
+The installer-first model separates:
+
+- public installer releases
+- internal app payload releases
+
+The installer resolves:
+
+- product role
+- release channel
+- matching internal payload
+
+This keeps the public release page focused on the installers instead of exposing the raw installed app binaries there.

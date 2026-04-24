@@ -22,6 +22,7 @@ from typing import NamedTuple
 from same_decoder import SAME_CODE_MAP
 from same_monitor import ServerAudioMonitor, build_live_wav_header
 from same_paths import app_root, resource_root
+from samestation_distribution import load_runtime_config
 
 
 ROOT_DIR = app_root()
@@ -41,7 +42,12 @@ FORWARDED_HEADERS = {
     "icy-metaint",
     "icy-name",
 }
-MONITOR = ServerAudioMonitor(ROOT_DIR)
+RUNTIME_CONFIG = load_runtime_config("server", ROOT_DIR)
+MONITOR = ServerAudioMonitor(
+    ROOT_DIR,
+    data_dir=Path(str(RUNTIME_CONFIG.get("miscDataPath") or (ROOT_DIR / "data"))),
+    recordings_dir=Path(str(RUNTIME_CONFIG.get("recordingsPath") or (ROOT_DIR / "data" / "recordings"))),
+)
 LOGGER = logging.getLogger("samestation")
 YOUTUBE_HOSTS = {
     "youtube.com",

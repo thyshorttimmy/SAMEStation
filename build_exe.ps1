@@ -10,11 +10,15 @@ if (-not (Test-Path $python)) {
 }
 
 Get-Process SAMEStation -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-if (Test-Path ".\dist\SAMEStation.exe") {
-    Remove-Item ".\dist\SAMEStation.exe" -Force -ErrorAction SilentlyContinue
-}
-if (Test-Path ".\dist\SAMEStation Installer.exe") {
-    Remove-Item ".\dist\SAMEStation Installer.exe" -Force -ErrorAction SilentlyContinue
+@(
+    ".\dist\SAMEStation Server.exe",
+    ".\dist\SAMEStation Client.exe",
+    ".\dist\SAMEStation Server Installer.exe",
+    ".\dist\SAMEStation Client Installer.exe"
+) | ForEach-Object {
+    if (Test-Path $_) {
+        Remove-Item $_ -Force -ErrorAction SilentlyContinue
+    }
 }
 
 $git = Get-Command git -ErrorAction SilentlyContinue
@@ -38,12 +42,18 @@ $buildInfo = @{
 }
 $buildInfo | ConvertTo-Json | Set-Content -Path ".\build_info.json" -Encoding UTF8
 
+$payloadChannel = "stable"
+if ($versionTag -match "alpha|beta|test|nightly|rc") {
+    $payloadChannel = "nightly"
+}
+
 & $python -m pip install -r requirements.txt -r requirements-build.txt
 
 function New-BuildArgs {
     param(
         [string]$Name,
-        [string]$EntryPoint
+        [string]$EntryPoint,
+        [switch]$Console
     )
 
     $args = @(
@@ -52,12 +62,18 @@ function New-BuildArgs {
     "--clean",
     "--name", $Name,
     "--icon", "web\\samestation.ico",
-    "--windowed",
     "--collect-all", "imageio_ffmpeg",
     "--add-data", "web;web",
     "--add-data", "data\same_codes.json;data",
     "--add-data", "build_info.json;."
     )
+
+    if ($Console) {
+        $args += "--console"
+    }
+    else {
+        $args += "--windowed"
+    }
 
     if ($OneFile) {
         $args += "--onefile"
@@ -70,16 +86,35 @@ function New-BuildArgs {
     return $args
 }
 
-& $python @(New-BuildArgs -Name "SAMEStation" -EntryPoint "samestation_launcher.py")
-& $python @(New-BuildArgs -Name "SAMEStation Installer" -EntryPoint "samestation_installer.py")
+& $python @(New-BuildArgs -Name "SAMEStation Server" -EntryPoint "samestation_server.py")
+& $python @(New-BuildArgs -Name "SAMEStation Client" -EntryPoint "samestation_client.py")
+& $python @(New-BuildArgs -Name "SAMEStation Server Installer" -EntryPoint "samestation_server_installer.py")
+& $python @(New-BuildArgs -Name "SAMEStation Client Installer" -EntryPoint "samestation_client_installer.py")
+
+$publicReleaseDir = ".\dist\public-release"
+$internalPayloadDir = ".\dist\internal-payloads"
+New-Item -ItemType Directory -Path $publicReleaseDir -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $internalPayloadDir "stable") -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $internalPayloadDir "nightly") -Force | Out-Null
+
+Copy-Item ".\dist\SAMEStation Server Installer.exe" -Destination (Join-Path $publicReleaseDir "SAMEStation Server Installer.exe") -Force
+Copy-Item ".\dist\SAMEStation Client Installer.exe" -Destination (Join-Path $publicReleaseDir "SAMEStation Client Installer.exe") -Force
+Copy-Item ".\dist\SAMEStation Server.exe" -Destination (Join-Path $internalPayloadDir "$payloadChannel\SAMEStation Server.exe") -Force
+Copy-Item ".\dist\SAMEStation Client.exe" -Destination (Join-Path $internalPayloadDir "$payloadChannel\SAMEStation Client.exe") -Force
 
 Write-Host ""
 Write-Host "Build complete."
 if ($OneFile) {
-    Write-Host "EXE: dist\SAMEStation.exe"
-    Write-Host "Installer: dist\SAMEStation Installer.exe"
+    Write-Host "Server: dist\SAMEStation Server.exe"
+    Write-Host "Client: dist\SAMEStation Client.exe"
+    Write-Host "Server Installer: dist\SAMEStation Server Installer.exe"
+    Write-Host "Client Installer: dist\SAMEStation Client Installer.exe"
+    Write-Host "Public release assets: dist\public-release\"
+    Write-Host "Internal payload assets: dist\internal-payloads\$payloadChannel\"
 }
 else {
-    Write-Host "Folder: dist\SAMEStation\"
-    Write-Host "Folder: dist\SAMEStation Installer\"
+    Write-Host "Folder: dist\SAMEStation Server\"
+    Write-Host "Folder: dist\SAMEStation Client\"
+    Write-Host "Folder: dist\SAMEStation Server Installer\"
+    Write-Host "Folder: dist\SAMEStation Client Installer\"
 }

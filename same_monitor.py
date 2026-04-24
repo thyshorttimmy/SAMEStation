@@ -31,10 +31,16 @@ STREAM_MONITOR_CHUNK_SAMPLES = 4096
 
 
 class ServerAudioMonitor:
-    def __init__(self, root_dir: Path) -> None:
+    def __init__(
+        self,
+        root_dir: Path,
+        *,
+        data_dir: Path | None = None,
+        recordings_dir: Path | None = None,
+    ) -> None:
         self.root_dir = root_dir
-        self.data_dir = root_dir / "data"
-        self.recordings_dir = self.data_dir / "recordings"
+        self.data_dir = Path(data_dir).resolve() if data_dir is not None else root_dir / "data"
+        self.recordings_dir = Path(recordings_dir).resolve() if recordings_dir is not None else self.data_dir / "recordings"
         self.alerts_path = self.data_dir / "alerts.json"
         self.settings_path = self.data_dir / "settings.json"
         self.data_dir.mkdir(parents=True, exist_ok=True)

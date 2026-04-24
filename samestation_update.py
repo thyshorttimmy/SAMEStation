@@ -21,8 +21,8 @@ UPDATE_CHANNELS = {
         "label": "Stable",
         "prerelease": False,
     },
-    "test": {
-        "label": "Test",
+    "nightly": {
+        "label": "Nightly",
         "prerelease": True,
     },
 }
@@ -57,8 +57,10 @@ class UpdateCheckResult:
 
 def normalize_update_channel(raw_channel: str | None) -> str:
     value = (raw_channel or "stable").strip().lower()
+    if value == "test":
+        value = "nightly"
     if value not in UPDATE_CHANNELS:
-        raise ValueError("Update channel must be stable or test.")
+        raise ValueError("Update channel must be stable or nightly.")
     return value
 
 
@@ -162,7 +164,7 @@ def fetch_latest_release(channel: str) -> ReleaseInfo:
     for item in payload:
         if bool(item.get("prerelease")) and not bool(item.get("draft")):
             return release_from_payload(normalized_channel, item)
-    raise RuntimeError("No test build is currently published.")
+    raise RuntimeError("No nightly build is currently published.")
 
 
 def release_from_payload(channel: str, payload: object) -> ReleaseInfo:

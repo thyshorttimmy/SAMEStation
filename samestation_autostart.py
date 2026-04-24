@@ -5,9 +5,12 @@ import sys
 from pathlib import Path
 
 from samestation_runtime import ModeName
+from samestation_distribution import ProductRole
 
 
 AUTO_START_TASK_NAME = "SAMEStation Auto Start"
+SERVER_AUTO_START_TASK_NAME = "SAMEStation Server Auto Start"
+CLIENT_AUTO_START_TASK_NAME = "SAMEStation Client Auto Start"
 DEFAULT_PORT = 8000
 DEFAULT_SERVER_URL = f"http://127.0.0.1:{DEFAULT_PORT}"
 
@@ -23,6 +26,26 @@ def is_windows_auto_start_enabled() -> bool:
         "/Query",
         "/TN",
         AUTO_START_TASK_NAME,
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    return result.returncode == 0
+
+
+def auto_start_task_name_for_role(role: ProductRole | str) -> str:
+    normalized = str(role).strip().lower()
+    if normalized == "server":
+        return SERVER_AUTO_START_TASK_NAME
+    if normalized == "client":
+        return CLIENT_AUTO_START_TASK_NAME
+    raise ValueError("Auto-start role must be server or client.")
+
+
+def is_product_auto_start_enabled(role: ProductRole | str) -> bool:
+    command = [
+        "schtasks",
+        "/Query",
+        "/TN",
+        auto_start_task_name_for_role(role),
     ]
     result = subprocess.run(command, capture_output=True, text=True, check=False)
     return result.returncode == 0
@@ -130,3 +153,56 @@ def sync_windows_auto_start(
         raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Unable to create auto-start task.")
     if not enabled and result.returncode not in {0, 1}:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Unable to remove auto-start task.")
+
+
+def sync_product_windows_auto_start(
+    *,
+    role: ProductRole | str,
+    enabled: bool,
+    executable_path: str | Path,
+    server_url: str = DEFAULT_SERVER_URL,
+    open_browser: bool = False,
+    headless: bool = True,
+) -> None:
+    task_name = auto_start_task_name_for_role(role)
+    target = Path(executable_path).resolve()
+    if enabled:
+        parts = [quote_windows_arg(str(target))]
+        normalized_role = str(role).strip().lower()
+        if normalized_role == "server":
+            if headless:
+                parts.append(quote_windows_arg("--headless"))
+            if open_browser:
+                parts.append(quote_windows_arg("--open-browser"))
+        elif normalized_role == "client":
+            if server_url:
+                parts.append(quote_windows_arg("--server-url"))
+                parts.append(quote_windows_arg(server_url))
+        else:
+            raise ValueError("Auto-start role must be server or client.")
+        command = [
+            "schtasks",
+            "/Create",
+            "/TN",
+            task_name,
+            "/SC",
+            "ONLOGON",
+            "/RL",
+            "LIMITED",
+            "/TR",
+            " ".join(parts),
+            "/F",
+        ]
+    else:
+        command = [
+            "schtasks",
+            "/Delete",
+            "/TN",
+            task_name,
+            "/F",
+        ]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    if enabled and result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Unable to create product auto-start task.")
+    if not enabled and result.returncode not in {0, 1}:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Unable to remove product auto-start task.")

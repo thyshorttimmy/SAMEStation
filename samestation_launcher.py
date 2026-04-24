@@ -585,7 +585,7 @@ def choose_launch_selection(default_selection: LaunchSelection) -> LaunchSelecti
     update_frame.pack(fill="x", pady=(18, 0))
     ttk.Label(
         update_frame,
-        text="Use the bundled installer to move between stable and test builds. The launcher can also check for updates each time it opens and hand off to the installer automatically.",
+        text="Use the bundled installer to move between stable and nightly builds. The launcher can also check for updates each time it opens and hand off to the installer automatically.",
         wraplength=600,
     ).pack(anchor="w")
     channel_row = ttk.Frame(update_frame)
