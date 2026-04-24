@@ -33,15 +33,15 @@ from samestation_runtime import install_missing_dependencies_for_mode
 
 
 WINDOW_WIDTH = 920
-WINDOW_HEIGHT = 760
+WINDOW_HEIGHT = 825
 CONTENT_PANEL_WIDTH = 872
-CONTENT_PANEL_HEIGHT = 520
+CONTENT_PANEL_HEIGHT = 590
 SETUP_COLUMN_WIDTH = 398
-SETUP_CARD_HEIGHT_TOP = 150
+SETUP_CARD_HEIGHT_TOP = 224
 SETUP_CARD_HEIGHT_MID = 186
 SETUP_CARD_HEIGHT_BOTTOM = 126
-SETUP_PANEL_HEIGHT = 548
-CLIENT_SETUP_PANEL_HEIGHT = 500
+SETUP_PANEL_HEIGHT = 630
+CLIENT_SETUP_PANEL_HEIGHT = 580
 CLIENT_DEFAULT_SERVER_URL = "http://127.0.0.1:8000"
 
 SERVER_RELEASE_NOTES = {
@@ -121,14 +121,15 @@ class ProductInstallerApp:
         self.install_failed = False
 
         self.channel_var = tk.StringVar(value="Stable" if normalize_channel(initial_channel) == "stable" else "Nightly")
+        initial_install_dir = Path(default_install_dir(self.role))
         self.available_version_var = tk.StringVar(value="Checking...")
-        self.installed_version_var = tk.StringVar(value="")
+        self.installed_version_var = tk.StringVar(value=installed_version_label(initial_install_dir, self.role))
         self.release_notes_var = tk.StringVar(value="")
         self.status_var = tk.StringVar(value="Ready.")
         self.log_var = tk.StringVar(value="")
         self.progress_var = tk.DoubleVar(value=0.0)
 
-        self.install_path_var = tk.StringVar(value=str(default_install_dir(self.role)))
+        self.install_path_var = tk.StringVar(value=str(initial_install_dir))
         default_launch_at_login = True if self.role == "server" else False
         try:
             default_launch_at_login = is_product_auto_start_enabled(self.role) or default_launch_at_login
@@ -230,6 +231,28 @@ class ProductInstallerApp:
             panel = ttk.Frame(host, padding=padding)
         panel.pack(fill="both", expand=True)
         return panel
+
+    def _build_value_box(self, parent: tk.Misc, variable: tk.StringVar) -> tuple[tk.Frame, tk.Label]:
+        box = tk.Frame(
+            parent,
+            height=36,
+            background="#ffffff",
+            highlightbackground="#a9a9a9",
+            highlightthickness=1,
+            bd=0,
+        )
+        box.pack_propagate(False)
+        label = tk.Label(
+            box,
+            textvariable=variable,
+            background="#ffffff",
+            anchor="w",
+            justify="left",
+            padx=6,
+            pady=4,
+        )
+        label.pack(fill="both", expand=True)
+        return box, label
 
     def _clear_content(self) -> None:
         for child in self.content.winfo_children():
@@ -335,8 +358,13 @@ class ProductInstallerApp:
         branch_box.pack(anchor="w", pady=(4, 8))
         branch_box.bind("<<ComboboxSelected>>", self._handle_channel_changed)
         ttk.Label(build_card, text="Available Payload").pack(anchor="w")
-        ttk.Entry(build_card, textvariable=self.available_version_var, state="readonly", width=28).pack(anchor="w", pady=(6, 2))
-        ttk.Label(build_card, textvariable=self.installed_version_var).pack(anchor="w")
+        available_box, _available_label = self._build_value_box(build_card, self.available_version_var)
+        available_box.pack(anchor="w", pady=(6, 4), fill="x")
+        ttk.Label(build_card, text="Installed Here").pack(anchor="w")
+        installed_box, installed_label = self._build_value_box(build_card, self.installed_version_var)
+        installed_label.configure(text=self.installed_version_var.get())
+        self.installed_version_var.trace_add("write", lambda *_args, label=installed_label: label.configure(text=self.installed_version_var.get()))
+        installed_box.pack(anchor="w", pady=(6, 0), fill="x")
 
         location_card = ttk.LabelFrame(right_column, text="Install Location", padding=10, width=SETUP_COLUMN_WIDTH, height=SETUP_CARD_HEIGHT_TOP)
         location_card.pack(fill="x", pady=(0, 8))
@@ -399,8 +427,13 @@ class ProductInstallerApp:
         branch_box.pack(anchor="w", pady=(4, 8))
         branch_box.bind("<<ComboboxSelected>>", self._handle_channel_changed)
         ttk.Label(build_card, text="Available Payload").pack(anchor="w")
-        ttk.Entry(build_card, textvariable=self.available_version_var, state="readonly", width=28).pack(anchor="w", pady=(6, 2))
-        ttk.Label(build_card, textvariable=self.installed_version_var).pack(anchor="w")
+        available_box, _available_label = self._build_value_box(build_card, self.available_version_var)
+        available_box.pack(anchor="w", pady=(6, 4), fill="x")
+        ttk.Label(build_card, text="Installed Here").pack(anchor="w")
+        installed_box, installed_label = self._build_value_box(build_card, self.installed_version_var)
+        installed_label.configure(text=self.installed_version_var.get())
+        self.installed_version_var.trace_add("write", lambda *_args, label=installed_label: label.configure(text=self.installed_version_var.get()))
+        installed_box.pack(anchor="w", pady=(6, 0), fill="x")
 
         location_card = ttk.LabelFrame(right_column, text="Install Location", padding=10, width=SETUP_COLUMN_WIDTH, height=SETUP_CARD_HEIGHT_TOP)
         location_card.pack(fill="x", pady=(0, 8))
